@@ -61,16 +61,6 @@ see [examples](./examples/) for examples.
 - **Support for class types as input parameters and return types**: Methods can now accept and return user-defined class types, including nested class qualifiers.
 - **Support for built-in `exit(code)` function**: Allow terminating the program with a custom exit code, mapping to the C `exit` function.
 
-## Project Structure
-
-```
-pangy/               # Compiler source code
-  parser_lexer.py     # Lexer and parser implementation
-  compiler.py         # Code generation logic
-  cli.py              # Command-line interface
-examples/             # Example Pangy programs
-```
-
 ## License
 
 [MIT](./LICENSE)
