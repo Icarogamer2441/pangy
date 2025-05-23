@@ -1,0 +1,9 @@
+class Main {
+    def main() -> void {
+        print("10 + 20 = ", this:add(10, 20))
+    }
+
+    def add(a int, b int) -> int {
+        return a + b
+    }
+}

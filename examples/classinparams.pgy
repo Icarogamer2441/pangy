@@ -1,0 +1,40 @@
+class Math {
+    static def main() -> void {
+        print("Math.main()")
+    }
+
+    def add(a int, b int) -> int {
+        return a + b
+    }
+
+    def sub(a int, b int) -> int {
+        return a - b
+    }
+
+    def mul(a int, b int) -> int {
+        return a * b
+    }
+
+    def div(a int, b int) -> int {
+        return a / b
+    }
+
+    def mod(a int, b int) -> int {
+        return a % b
+    }
+}
+
+class Main {
+    def main() -> void {
+        var math Math = Math.new()
+        this:test_math(math)
+    }
+
+    def test_math(math Math) -> void {
+        print("10 + 20 = ", math.add(10, 20))
+        print("10 - 20 = ", math.sub(10, 20))
+        print("10 * 20 = ", math.mul(10, 20))
+        print("10 / 20 = ", math.div(10, 20))
+        print("10 % 20 = ", math.mod(10, 20))
+    }
+}

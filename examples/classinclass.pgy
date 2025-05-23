@@ -1,0 +1,30 @@
+// you can also move the MultiClass another file and import it
+
+class MultiClass {
+    static def main() -> void {
+        print("MultiClass.main()")
+    }
+
+    def test(a int) -> void {
+        print(a)
+    }
+
+    class InnerClass {
+        def main() -> void {
+            print("InnerClass.main()")
+        }
+
+        def test(a int) -> void {
+            print("2 * a = ", 2 * a)
+        }
+    }
+}
+
+class Main {
+    def main() -> void {
+        var mc MultiClass = MultiClass.new()
+        mc.test(10)
+        var ic MultiClass.InnerClass = MultiClass.InnerClass.new() // or var ic mc.InnerClass = mc.InnerClass.new()
+        ic.test(10)
+    }
+}

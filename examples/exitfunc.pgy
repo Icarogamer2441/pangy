@@ -1,0 +1,7 @@
+class Main {
+    def main() -> void {
+        print("Hello, World!")
+        exit(0)
+        print("This will not be printed")
+    }
+}

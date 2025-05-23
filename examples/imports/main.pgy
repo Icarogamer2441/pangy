@@ -1,0 +1,12 @@
+include "./math.pgy"
+
+class Main {
+    def main() -> void {
+        var math Math = Math.new()
+        print("10 + 20 = ", math.add(10, 20))
+        print("10 - 20 = ", math.sub(10, 20))
+        print("10 * 20 = ", math.mul(10, 20))
+        print("10 / 20 = ", math.div(10, 20))
+        print("10 % 20 = ", math.mod(10, 20))
+    }
+}

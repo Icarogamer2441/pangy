@@ -1,0 +1,15 @@
+class Main {
+    def main() -> void {
+        var a int = 10
+        var b int = 20
+        print("a + b = ", a + b)
+
+        this:test("a", a)
+        this:test("b", b)
+        this:test("c", a + b)
+    }
+
+    def test(name string, value int) -> void {
+        print("name = ", name, " value = ", value)
+    }
+}
