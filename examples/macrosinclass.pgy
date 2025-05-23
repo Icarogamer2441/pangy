@@ -1,0 +1,24 @@
+class Main {
+    def main() -> void {
+        var math Math = Math.new()
+        print("1: 10 + 20 = ", this:@add(10, 20))
+        var a int = this:@add(10, 20)
+        print("2: 10 + 20 = ", a)
+
+        math.do_add(10, 20)
+    }
+
+    macro add(a, b) {
+        a + b
+    }
+}
+
+class Math {
+    macro add(a, b) {
+        a + b
+    }
+
+    def do_add(a int, b int) -> void {
+        print("3: 10 + 20 = ", this:@add(a, b))
+    }
+}

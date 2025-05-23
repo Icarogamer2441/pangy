@@ -7,13 +7,43 @@ from .compiler import Compiler
 # Helper function to resolve include paths relative to the directory of the current file
 def resolve_include_path(current_file_path: str, include_path_str: str) -> str:
     current_dir = os.path.dirname(os.path.abspath(current_file_path))
-    return os.path.normpath(os.path.join(current_dir, include_path_str))
+    
+    # Split the include path into parts (filename.Class.InnerClass)
+    parts = include_path_str.split('.')
+    
+    # First part is the filename (without extension)
+    filename = parts[0] + ".pgy"
+    
+    # Return the resolved file path
+    return os.path.normpath(os.path.join(current_dir, filename))
 
-# Function to parse a single file and return its classes and further includes
-def parse_single_file(file_path: str) -> tuple[list, list, bool, str | None, str | None]:
-    # Returns (classes, includes_to_process_next, success, error_type, error_message)
+# Helper function to extract import details from include path
+def extract_import_details(include_path_str: str) -> tuple:
+    parts = include_path_str.split('.')
+    
+    # Default: import the entire file
+    filename = parts[0] + ".pgy"
+    import_type = "file"
+    import_name = None
+    
+    if len(parts) > 1:
+        # Importing a specific item (class, inner class, macro)
+        if parts[1].startswith('@'):
+            # Macro import
+            import_type = "macro"
+            import_name = parts[1][1:]  # Remove '@' prefix
+        else:
+            # Class import
+            import_type = "class"
+            import_name = '.'.join(parts[1:])  # Join all remaining parts for nested classes
+    
+    return (filename, import_type, import_name)
+
+# Function to parse a single file and return its classes, macros and further includes
+def parse_single_file(file_path: str) -> tuple[list, list, list, bool, str | None, str | None]:
+    # Returns (classes, macros, includes_to_process_next, success, error_type, error_message)
     if not os.path.exists(file_path):
-        return [], [], False, "File Not Found", f"Error: File '{file_path}' not found."
+        return [], [], [], False, "File Not Found", f"Error: File '{file_path}' not found."
     
     # Main loop in main() handles uniqueness to avoid re-parsing the same file.
 
@@ -24,19 +54,46 @@ def parse_single_file(file_path: str) -> tuple[list, list, bool, str | None, str
     try:
         tokens = lexer.tokenize()
     except Exception as e:
-        return [], [], False, "Lexer Error", f"Lexer Error in '{file_path}': {e}"
+        return [], [], [], False, "Lexer Error", f"Lexer Error in '{file_path}': {e}"
 
     parser_instance = Parser(tokens)
     try:
         ast_program_node = parser_instance.parse() # This is a ProgramNode
         further_includes_to_process = []
-        for include_node in ast_program_node.includes:
-            resolved_path = resolve_include_path(file_path, include_node.path)
-            further_includes_to_process.append(resolved_path)
         
-        return ast_program_node.classes, further_includes_to_process, True, None, None
+        for include_node in ast_program_node.includes:
+            # Get the file path without the class/inner class part
+            file_path_to_include = resolve_include_path(file_path, include_node.path)
+            
+            # Include the whole file for processing
+            further_includes_to_process.append((file_path_to_include, include_node.path))
+        
+        return ast_program_node.classes, ast_program_node.macros, further_includes_to_process, True, None, None
     except Exception as e:
-        return [], [], False, "Parser Error", f"Parser Error in '{file_path}': {e}"
+        return [], [], [], False, "Parser Error", f"Parser Error in '{file_path}': {e}"
+
+# Helper to filter classes and macros based on import path
+def filter_imports(classes, macros, import_path):
+    filename, import_type, import_name = extract_import_details(import_path)
+    
+    filtered_classes = []
+    filtered_macros = []
+    
+    if import_type == "file":
+        # Import everything from the file
+        return classes, macros
+    elif import_type == "class":
+        # Import specific class(es)
+        for cls in classes:
+            if cls.name == import_name or cls.name.startswith(import_name + '.'):
+                filtered_classes.append(cls)
+    elif import_type == "macro":
+        # Import specific macro
+        for macro in macros:
+            if macro.name == import_name:
+                filtered_macros.append(macro)
+    
+    return filtered_classes, filtered_macros
 
 def main():
     arg_parser = argparse.ArgumentParser(description="Pangy Compiler")
@@ -74,27 +131,34 @@ def main():
         return
 
     all_classes = []
-    files_to_process_queue = [initial_input_file_path]
+    all_macros = []
+    # Queue now contains tuples of (file_path, import_path)
+    files_to_process_queue = [(initial_input_file_path, None)]  # Main file has no import path
     # This set tracks files that have been added to the queue to prevent cycles and redundant processing.
     files_added_to_queue = {initial_input_file_path}
 
     while files_to_process_queue:
-        current_file_to_parse = files_to_process_queue.pop(0)
+        current_file_to_parse, import_path = files_to_process_queue.pop(0)
         
-        classes_from_file, next_includes, success, err_type, err_msg = parse_single_file(current_file_to_parse)
+        classes_from_file, macros_from_file, next_includes, success, err_type, err_msg = parse_single_file(current_file_to_parse)
         
         if not success:
             print(f"{err_type}: {err_msg}") # Error message already includes file path
             return
         
-        all_classes.extend(classes_from_file)
+        # If this is an import (not the main file), filter based on import path
+        if import_path:
+            classes_from_file, macros_from_file = filter_imports(classes_from_file, macros_from_file, import_path)
         
-        for include_path in next_includes: # these are already resolved absolute paths
-            if include_path not in files_added_to_queue:
-                files_to_process_queue.append(include_path)
-                files_added_to_queue.add(include_path) # Add here to prevent adding to queue multiple times
+        all_classes.extend(classes_from_file)
+        all_macros.extend(macros_from_file)
+        
+        for file_path, full_import_path in next_includes:
+            if file_path not in files_added_to_queue:
+                files_to_process_queue.append((file_path, full_import_path))
+                files_added_to_queue.add(file_path) # Add here to prevent adding to queue multiple times
 
-    master_ast = ProgramNode(classes=all_classes, includes=[])
+    master_ast = ProgramNode(classes=all_classes, includes=[], macros=all_macros)
 
     if args.ast:
         print("Combined Abstract Syntax Tree (AST) from all included files:")

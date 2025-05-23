@@ -1,4 +1,5 @@
-include "./math.pgy"
+include math.Math // you can also import macros with 'include filename.@macroname'
+// and inner classes with 'include filename.ClassName.InnerClass'
 
 class Main {
     def main() -> void {

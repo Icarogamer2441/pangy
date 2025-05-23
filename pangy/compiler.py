@@ -2,6 +2,7 @@ from .parser_lexer import (
     ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode,
     ParamNode, IntegerLiteralNode, IdentifierNode, ThisNode,
     MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, ReturnNode, StringLiteralNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode,
+    MacroDefNode, MacroInvokeNode,
     TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL,
     TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
     TT_PLUSPLUS, TT_MINUSMINUS
@@ -31,6 +32,8 @@ class Compiler:
         # For loop support
         self.next_loop_id = 0
         self.loop_end_labels = []
+        # For macro support
+        self.macros = {} # Maps macro names to MacroDefNode objects
 
     def new_string_label(self, value):
         if value in self.string_literals:
@@ -102,6 +105,17 @@ class Compiler:
         self.next_string_label_id = 0; self.next_printf_format_label_id = 0; self.next_if_label_id = 0
         self.current_method_params = {}; self.current_method_stack_offset = 0
         self.current_method_total_stack_needed = 0; self.current_method_context = None
+        
+        # Register all macros (both global and class-level)
+        self.macros = {}
+        for macro_def in node.macros:
+            # For class macros, use qualified name as the key
+            if hasattr(macro_def, 'class_name') and macro_def.class_name:
+                key = f"{macro_def.class_name}_{macro_def.name}"
+                self.macros[key] = macro_def
+            else:
+                self.macros[macro_def.name] = macro_def
+            # No code generation needed for macro definitions
 
         for class_node in node.classes:
             self.text_section_code += self.visit(class_node)
@@ -235,6 +249,10 @@ class Compiler:
                 # Future: MethodCallNode would need return type lookup for %s/%d choice
                 # ThisNode currently resolves to an address (pointer), printing as %d is okay for now.
                 format_string_parts.append("%d") 
+                arg_expr_nodes.append(expr)
+            elif isinstance(expr, MacroInvokeNode):
+                # For macro invocations, we'll assume they'll resolve to integers for now
+                format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
             else: 
                 raise CompilerError(f"Cannot print expression of type {type(expr)} at L{node.lineno}")
@@ -642,6 +660,119 @@ class Compiler:
         # Store result
         code += f"  mov QWORD PTR [rbp {offset}], rax # {var_name} = RAX\n"
         return code
+
+    def visit_MacroDefNode(self, node: MacroDefNode, context=None):
+        # Macro definitions don't generate code directly
+        return ""
+        
+    def visit_MacroInvokeNode(self, node: MacroInvokeNode, context):
+        # Look up the macro definition
+        macro_name = node.name
+        current_class_name = None if context is None else context[0]
+        
+        # Determine the right macro to use based on context
+        macro_def = None
+        
+        # If the macro is called on an object (obj.@macro or this:@macro)
+        if node.object_expr:
+            # For 'this:@macro', use the current class
+            if isinstance(node.object_expr, ThisNode):
+                if current_class_name:
+                    lookup_key = f"{current_class_name}_{macro_name}"
+                    macro_def = self.macros.get(lookup_key)
+            # For 'obj.@macro', try to determine the class of obj
+            elif isinstance(node.object_expr, IdentifierNode):
+                obj_name = node.object_expr.value
+                obj_type = None
+                # Look up the variable type
+                if obj_name in self.current_method_locals:
+                    obj_type = self.current_method_locals[obj_name]['type']
+                elif obj_name in self.current_method_params:
+                    obj_type = self.current_method_params[obj_name]['type']
+                
+                if obj_type and obj_type not in ['int', 'string']:
+                    # Use the variable's type as the class name
+                    lookup_key = f"{obj_type}_{macro_name}"
+                    macro_def = self.macros.get(lookup_key)
+                else:
+                    # Might be a direct class name like Math.@add
+                    lookup_key = f"{obj_name}_{macro_name}"
+                    macro_def = self.macros.get(lookup_key)
+        
+        # If no class-specific macro was found, try the global macro
+        if macro_def is None:
+            # If we're in a class context, try the current class's macro first
+            if current_class_name:
+                lookup_key = f"{current_class_name}_{macro_name}"
+                macro_def = self.macros.get(lookup_key)
+            
+            # If still not found, try global macro
+            if macro_def is None:
+                macro_def = self.macros.get(macro_name)
+        
+        if macro_def is None:
+            raise CompilerError(f"Unknown macro '{macro_name}' at L{node.lineno}")
+            
+        # Check argument count
+        if len(node.arguments) != len(macro_def.params):
+            raise CompilerError(f"Macro '{macro_name}' expects {len(macro_def.params)} arguments, got {len(node.arguments)} at L{node.lineno}")
+            
+        # Create a dictionary mapping parameter names to argument expressions
+        param_to_arg = {}
+        for i, param_name in enumerate(macro_def.params):
+            param_to_arg[param_name] = node.arguments[i]
+            
+        # Clone the macro body with arguments substituted
+        # For now, we only support simple expression bodies
+        if isinstance(macro_def.body, BinaryOpNode):
+            # For binary operators like a + b
+            if isinstance(macro_def.body.left, IdentifierNode) and macro_def.body.left.value in param_to_arg:
+                left_arg = param_to_arg[macro_def.body.left.value]
+                code = self.visit(left_arg, context)
+                code += "  push rax # Push left arg for macro expansion\n"
+            else:
+                code = self.visit(macro_def.body.left, context)
+                code += "  push rax # Push left side for macro expansion\n"
+                
+            if isinstance(macro_def.body.right, IdentifierNode) and macro_def.body.right.value in param_to_arg:
+                right_arg = param_to_arg[macro_def.body.right.value]
+                code += self.visit(right_arg, context)
+            else:
+                code += self.visit(macro_def.body.right, context)
+                
+            # Now perform the operation
+            code += "  mov rbx, rax # Move right value to rbx\n"
+            code += "  pop rax # Get left value\n"
+            
+            # Apply the operation based on the operator type
+            op_type = macro_def.body.op_token.type
+            if op_type == TT_PLUS:
+                code += "  add rax, rbx # Macro expansion: add\n"
+            elif op_type == TT_MINUS:
+                code += "  sub rax, rbx # Macro expansion: subtract\n"
+            elif op_type == TT_STAR:
+                code += "  imul rax, rbx # Macro expansion: multiply\n"
+            elif op_type == TT_SLASH:
+                code += "  mov rcx, rbx # Move divisor to rcx\n"
+                code += "  cqo # Sign-extend rax into rdx:rax\n"
+                code += "  idiv rcx # Macro expansion: divide\n"
+            elif op_type == TT_PERCENT:
+                code += "  mov rcx, rbx # Move divisor to rcx\n"
+                code += "  cqo # Sign-extend rax into rdx:rax\n"
+                code += "  idiv rcx # Macro expansion: modulo\n"
+                code += "  mov rax, rdx # Move remainder to rax\n"
+            else:
+                raise CompilerError(f"Unsupported operator in macro expansion: {op_type} at L{node.lineno}")
+                
+            return code
+            
+        # For simple identifier parameters, just evaluate the argument directly
+        elif isinstance(macro_def.body, IdentifierNode) and macro_def.body.value in param_to_arg:
+            return self.visit(param_to_arg[macro_def.body.value], context)
+            
+        # For literals and other expressions, just evaluate the body
+        else:
+            return self.visit(macro_def.body, context)
 
     def compile(self, node: ProgramNode):
         return self.visit(node)

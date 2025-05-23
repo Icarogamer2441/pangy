@@ -15,6 +15,10 @@ TT_PRINT = 'PRINT'
 TT_SEMICOLON = 'SEMICOLON' # If we need it
 TT_EOF = 'EOF' # End of File
 
+# Macro support
+TT_MACRO = 'MACRO'
+TT_AT = 'AT'
+
 # New tokens for funcs.pgy
 TT_INT_LITERAL = 'INT_LITERAL'
 TT_COMMA = ','
@@ -121,6 +125,8 @@ class Lexer:
             return Token(TT_LOOP, 'loop', self.lineno, start_col)
         elif result == 'stop':
             return Token(TT_STOP, 'stop', self.lineno, start_col)
+        elif result == 'macro': # Added for macro keyword
+            return Token(TT_MACRO, 'macro', self.lineno, start_col)
         else:
             return Token(TT_IDENTIFIER, result, self.lineno, start_col)
 
@@ -169,6 +175,11 @@ class Lexer:
 
             if self.current_char == '"':
                 return self.get_string_literal()
+
+            if self.current_char == '@':
+                token = Token(TT_AT, '@', self.lineno, start_col)
+                self.advance()
+                return token
 
             if self.current_char == '(':
                 token = Token(TT_LPAREN, '(', self.lineno, start_col)
@@ -312,17 +323,17 @@ class ASTNode:
     pass
 
 class ProgramNode(ASTNode):
-    def __init__(self, classes, includes=None): # Added includes
+    def __init__(self, classes, includes=None, macros=None): # Added macros
         self.classes = classes # List of ClassNode
         self.includes = includes if includes is not None else [] # List of IncludeNode
+        self.macros = macros if macros is not None else [] # List of MacroDefNode
 
     def __repr__(self):
-        return f"ProgramNode(classes={self.classes}, includes={self.includes})"
+        return f"ProgramNode(classes={self.classes}, includes={self.includes}, macros={self.macros})"
 
 class IncludeNode(ASTNode): # New AST Node for include directives
-    def __init__(self, path_token, lineno):
-        self.path = path_token.value # The string literal path
-        self.path_token = path_token
+    def __init__(self, path, lineno):
+        self.path = path # The path (filename.Class.InnerClass or filename.@macroname)
         self.lineno = lineno
     
     def __repr__(self):
@@ -334,9 +345,10 @@ class ClassNode(ASTNode):
         self.name_token = name_token
         self.methods = methods  # List of MethodNode
         self.nested_classes = nested_classes if nested_classes is not None else []  # List of nested ClassNode
+        self.macros = []  # List of MacroDefNode
 
     def __repr__(self):
-        return f"ClassNode(name='{self.name}', methods={self.methods}, nested_classes={self.nested_classes})"
+        return f"ClassNode(name='{self.name}', methods={self.methods}, nested_classes={self.nested_classes}, macros={self.macros})"
 
 class ParamNode(ASTNode):
     def __init__(self, name_token, type_token):
@@ -507,6 +519,33 @@ class AssignmentNode(ASTNode):
     def __repr__(self):
         return f"AssignmentNode(name='{self.name}', expr={self.expression}, L{self.lineno})"
 
+# Macro-related AST nodes
+class MacroDefNode(ASTNode):
+    def __init__(self, name_token, params, body, lineno):
+        self.name = name_token.value
+        self.name_token = name_token
+        self.params = params  # List of parameter names (strings)
+        self.body = body      # BlockNode or expression
+        self.lineno = lineno
+        self.class_name = None  # Will be set for class macros
+        self.qualified_name = None  # Will be set for class macros
+    
+    def __repr__(self):
+        class_prefix = f"{self.class_name}." if self.class_name else ""
+        return f"MacroDefNode(name='{class_prefix}{self.name}', params={self.params}, body={self.body}, L{self.lineno})"
+
+class MacroInvokeNode(ExprNode):
+    def __init__(self, name_token, arguments, lineno, object_expr=None):
+        self.name = name_token.value
+        self.name_token = name_token
+        self.arguments = arguments  # List of ExprNode
+        self.lineno = lineno
+        self.object_expr = object_expr  # The object expression for method calls (e.g., this or an object variable)
+    
+    def __repr__(self):
+        object_str = f"{self.object_expr}:" if self.object_expr else ""
+        return f"MacroInvokeNode(name='{object_str}@{self.name}', args={self.arguments}, L{self.lineno})"
+
 # Parser
 class Parser:
     def __init__(self, tokens):
@@ -537,10 +576,15 @@ class Parser:
             raise Exception(f"ParserError: Expected token {expected} but got {found} ('{val}') at L{line}:C{col}")
 
     def parse_program(self):
-        # program ::= include_directive* class_definition*
+        # program ::= include_directive* macro_definition* class_definition*
         includes = []
         while self.current_token.type == TT_INCLUDE:
             includes.append(self.parse_include_directive())
+
+        # Parse macro definitions
+        macros = []
+        while self.current_token.type == TT_MACRO:
+            macros.append(self.parse_macro_definition())
 
         # Parse top-level class definitions
         raw_classes = []
@@ -549,13 +593,18 @@ class Parser:
 
         if self.current_token.type != TT_EOF:
             tok = self.current_token
-            raise Exception(f"ParserError: Expected EOF, include, or class definition, but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
+            raise Exception(f"ParserError: Expected EOF, include, macro, or class definition, but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
 
         # Flatten nested classes into a single list with qualified names
         def flatten_class(c, prefix=None):
             # Update class name if nested
             if prefix:
                 c.name = f"{prefix}.{c.name}"
+                
+                # Update macro names with class prefix
+                for macro in c.macros:
+                    macro.qualified_name = f"{c.name}_{macro.name}"
+                
             classes = [c]
             for nc in getattr(c, 'nested_classes', []):
                 classes.extend(flatten_class(nc, c.name))
@@ -565,32 +614,86 @@ class Parser:
         for rc in raw_classes:
             classes.extend(flatten_class(rc))
 
-        return ProgramNode(classes, includes)  # Pass includes to ProgramNode
+        # Collect all macros from classes
+        for c in classes:
+            for macro in getattr(c, 'macros', []):
+                macro.class_name = c.name  # Associate macro with its class
+                macros.append(macro)
+
+        return ProgramNode(classes, includes, macros)  # Pass all macros to ProgramNode
 
     def parse_include_directive(self):
-        # include_directive ::= "include" STRING_LITERAL
+        # include_directive ::= "include" IDENTIFIER ("." IDENTIFIER | "." "@" IDENTIFIER)*
         include_token = self.consume(TT_INCLUDE)
-        path_token = self.consume(TT_STRING_LITERAL)
-        # Optional semicolon could be added here if desired by language spec
-        return IncludeNode(path_token, include_token.lineno)
+        
+        # Parse the first part (filename)
+        first_token = self.consume(TT_IDENTIFIER)
+        path = first_token.value
+        
+        # Parse optional parts (Class.InnerClass or @macroname)
+        while self.current_token.type == TT_DOT:
+            self.consume(TT_DOT)
+            
+            # Check for macro (@name)
+            if self.current_token.type == TT_AT:
+                self.consume(TT_AT)
+                macro_name = self.consume(TT_IDENTIFIER)
+                path += f".@{macro_name.value}"
+            else:
+                # Class or InnerClass
+                class_name = self.consume(TT_IDENTIFIER)
+                path += f".{class_name.value}"
+        
+        return IncludeNode(path, include_token.lineno)
+
+    def parse_macro_definition(self):
+        # macro_definition ::= "macro" IDENTIFIER "(" macro_params ")" "{" expression "}"
+        macro_token = self.consume(TT_MACRO)
+        name_token = self.consume(TT_IDENTIFIER)
+        self.consume(TT_LPAREN)
+        
+        # Parse macro parameters (comma-separated identifiers)
+        params = []
+        if self.current_token.type == TT_IDENTIFIER:
+            param_token = self.consume(TT_IDENTIFIER)
+            params.append(param_token.value)
+            while self.current_token.type == TT_COMMA:
+                self.consume(TT_COMMA)
+                param_token = self.consume(TT_IDENTIFIER)
+                params.append(param_token.value)
+        
+        self.consume(TT_RPAREN)
+        self.consume(TT_LBRACE)
+        
+        # Parse macro body (single expression for now)
+        body = self.parse_expression()
+        
+        self.consume(TT_RBRACE)
+        
+        return MacroDefNode(name_token, params, body, macro_token.lineno)
 
     def parse_class_definition(self):
-        # class_definition ::= "class" IDENTIFIER "{" class_definition* method_definition* "}"
+        # class_definition ::= "class" IDENTIFIER "{" class_definition* method_definition* macro_definition* "}"
         self.consume(TT_CLASS)
         name_token = self.consume(TT_IDENTIFIER)
         self.consume(TT_LBRACE)  # '{'
 
         nested_classes = []
         methods = []
-        # Loop for nested classes or method definitions
-        while self.current_token.type in (TT_CLASS, TT_STATIC, TT_DEF):
+        macros = []  # Added list for macros inside the class
+        # Loop for nested classes, method definitions, or macro definitions
+        while self.current_token.type in (TT_CLASS, TT_STATIC, TT_DEF, TT_MACRO):
             if self.current_token.type == TT_CLASS:
                 nested_classes.append(self.parse_class_definition())
+            elif self.current_token.type == TT_MACRO:
+                macros.append(self.parse_macro_definition())  # Parse macro definition inside class
             else:
                 methods.append(self.parse_method_definition())
 
         self.consume(TT_RBRACE)  # '}'
-        return ClassNode(name_token, methods, nested_classes)
+        class_node = ClassNode(name_token, methods, nested_classes)
+        class_node.macros = macros  # Add macros to the ClassNode
+        return class_node
 
     def parse_parameters(self):
         # parameters ::= (IDENTIFIER (TYPE | IDENTIFIER) ("." IDENTIFIER)* ("," IDENTIFIER (TYPE | IDENTIFIER) ("." IDENTIFIER)*)*)?
@@ -828,14 +931,34 @@ class Parser:
         # term ::= primary ( ( "." | ":" ) IDENTIFIER "(" arguments? ")" | "++" | "--" | "(" arguments ")" )* 
         node = self.parse_primary()
 
-        while self.current_token.type in (TT_DOT, TT_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN):
-            # Handle nested class qualifiers vs method calls on DOT
+        while self.current_token.type in (TT_DOT, TT_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN, TT_AT):
+            # Handle postfix increment/decrement
+            if self.current_token.type in (TT_PLUSPLUS, TT_MINUSMINUS):
+                op_token = self.current_token
+                self.advance()  # Consume '++' or '--'
+                node = UnaryOpNode(op_token, node)
+                continue
+
+            # Handle dot operator for method calls or member access
             if self.current_token.type == TT_DOT:
-                # Lookahead to distinguish qualifier vs method call
-                if (self.token_idx + 1 < len(self.tokens) and self.tokens[self.token_idx + 1].type == TT_IDENTIFIER and
-                    self.token_idx + 2 < len(self.tokens) and self.tokens[self.token_idx + 2].type == TT_LPAREN):
+                self.advance()  # Consume '.'
+                
+                # Check for @macro invocation after the dot
+                if self.current_token.type == TT_AT:
+                    self.advance()  # Consume '@'
+                    macro_name_token = self.consume(TT_IDENTIFIER)
+                    self.consume(TT_LPAREN)
+                    args = []
+                    if self.current_token.type != TT_RPAREN:
+                        args = self.parse_argument_list()
+                    self.consume(TT_RPAREN)
+                    node = MacroInvokeNode(macro_name_token, args, macro_name_token.lineno, node)
+                    continue
+                
+                # Check for method call vs member access
+                if (self.token_idx + 1 < len(self.tokens) and 
+                    self.tokens[self.token_idx + 1].type == TT_LPAREN):
                     # Method call on identifier
-                    self.advance()  # Consume '.'
                     method_name_token = self.consume(TT_IDENTIFIER)
                     self.consume(TT_LPAREN)
                     args = []
@@ -844,15 +967,30 @@ class Parser:
                     self.consume(TT_RPAREN)
                     node = MethodCallNode(node, method_name_token, args)
                 else:
-                    # Nested qualifier (e.g., ClassName.InnerClass)
-                    self.advance()  # Consume '.'
+                    # Member access (e.g., ClassName.InnerClass)
                     ident_token = self.consume(TT_IDENTIFIER)
                     # Merge into composite identifier
                     composite_value = f"{node.value}.{ident_token.value}"
                     node = IdentifierNode(Token(TT_IDENTIFIER, composite_value, ident_token.lineno, ident_token.colno))
-            elif self.current_token.type == TT_COLON:
-                # Method call on 'this' using colon
+                continue
+
+            # Handle this:method() or this:@macro() calls
+            if self.current_token.type == TT_COLON:
                 self.advance()  # Consume ':'
+                
+                # Check for @macro invocation after the colon
+                if self.current_token.type == TT_AT:
+                    self.advance()  # Consume '@'
+                    macro_name_token = self.consume(TT_IDENTIFIER)
+                    self.consume(TT_LPAREN)
+                    args = []
+                    if self.current_token.type != TT_RPAREN:
+                        args = self.parse_argument_list()
+                    self.consume(TT_RPAREN)
+                    node = MacroInvokeNode(macro_name_token, args, macro_name_token.lineno, node)
+                    continue
+                
+                # Regular method call
                 method_name_token = self.consume(TT_IDENTIFIER)
                 self.consume(TT_LPAREN)
                 args = []
@@ -860,16 +998,10 @@ class Parser:
                     args = self.parse_argument_list()
                 self.consume(TT_RPAREN)
                 node = MethodCallNode(node, method_name_token, args)
-            elif self.current_token.type == TT_PLUSPLUS:
-                op_token = self.current_token
-                self.advance()  # Consume '++'
-                node = UnaryOpNode(op_token, node)
-            elif self.current_token.type == TT_MINUSMINUS:
-                op_token = self.current_token
-                self.advance()  # Consume '--'
-                node = UnaryOpNode(op_token, node)
-            elif self.current_token.type == TT_LPAREN:
-                # Free function call, e.g., exit(0)
+                continue
+
+            # Handle direct function calls
+            if self.current_token.type == TT_LPAREN:
                 self.consume(TT_LPAREN)
                 args = []
                 if self.current_token.type != TT_RPAREN:
@@ -880,8 +1012,22 @@ class Parser:
                 else:
                     tok = self.current_token
                     raise Exception(f"ParserError: Unexpected function call on non-identifier at L{tok.lineno}:C{tok.colno}")
-            else:
-                break
+                continue
+                
+            # Handle global @macro calls
+            if self.current_token.type == TT_AT:
+                self.advance()  # Consume '@'
+                macro_name_token = self.consume(TT_IDENTIFIER)
+                self.consume(TT_LPAREN)
+                args = []
+                if self.current_token.type != TT_RPAREN:
+                    args = self.parse_argument_list()
+                self.consume(TT_RPAREN)
+                node = MacroInvokeNode(macro_name_token, args, macro_name_token.lineno)
+                continue
+                
+            break
+        
         return node
 
     def parse_primary(self):
@@ -903,6 +1049,16 @@ class Parser:
             node = self.parse_expression()
             self.consume(TT_RPAREN)
             return node
+        elif token.type == TT_AT:
+            # Direct macro invocation: @name(args)
+            self.consume(TT_AT)
+            macro_name_token = self.consume(TT_IDENTIFIER)
+            self.consume(TT_LPAREN)
+            args = []
+            if self.current_token.type != TT_RPAREN:
+                args = self.parse_argument_list()
+            self.consume(TT_RPAREN)
+            return MacroInvokeNode(macro_name_token, args, macro_name_token.lineno)
         else:
             raise Exception(f"ParserError: Unexpected token {token.type} ('{token.value}') for expression at L{token.lineno}:C{token.colno}")
 

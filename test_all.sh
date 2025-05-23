@@ -7,6 +7,8 @@ pangy examples/loops.pgy -o loops
 pangy examples/classinclass.pgy -o classinclass
 pangy examples/classinparams.pgy -o classinparams
 pangy examples/exitfunc.pgy -o exitfunc
+pangy examples/macros.pgy -o macros
+pangy examples/macrosinclass.pgy -o macrosinclass
 
 echo "Running hello..."
 ./hello
@@ -35,5 +37,11 @@ echo "--------------------------------"
 echo "Running exitfunc..."
 ./exitfunc
 echo "--------------------------------"
+echo "Running macros..."
+./macros
+echo "--------------------------------"
+echo "Running macrosinclass..."
+./macrosinclass
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass
