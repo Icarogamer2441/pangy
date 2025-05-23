@@ -22,13 +22,15 @@ pangy <input_file>.pgy [options]
 ```
 
 Positional arguments:
-  input_file           Pangy source file to compile (.pgy)
+
+- input_file           Pangy source file to compile (.pgy)
 
 Optional arguments:
-  -o, --output OUTPUT  Output file name (default: a.out executable, or .s file if generating assembly)
-  -S, --assembly       Output assembly code (.s file) instead of an executable
-  --ast                Print the combined Abstract Syntax Tree (AST) and exit
-  --tokens             Print tokens from the main input file and exit
+
+- -o, --output OUTPUT  Output file name (default: a.out executable, or .s file if generating assembly)
+- -S, --assembly       Output assembly code (.s file) instead of an executable
+- --ast                Print the combined Abstract Syntax Tree (AST) and exit
+- --tokens             Print tokens from the main input file and exit
 
 Examples:
 
