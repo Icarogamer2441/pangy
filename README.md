@@ -9,18 +9,45 @@ Pangy is a simple command-line compiler for the Pangy language, featuring:
 - `var` declarations, expressions, control flow (`if`, `loop`, `stop`)
 - Arithmetic operations (`+`, `-`, `*`, `/`, `%`) and comparisons
 
-## Usage
-
-To compile and run a Pangy program:
+## Install
 
 ```bash
-python3 -m pangy.cli <source_file>.pgy
+pip install -e .
 ```
 
-Example:
+## Usage
 
 ```bash
-python3 -m pangy.cli examples/classinparams.pgy
+pangy <input_file>.pgy [options]
+```
+
+Positional arguments:
+  input_file           Pangy source file to compile (.pgy)
+
+Optional arguments:
+  -o, --output OUTPUT  Output file name (default: a.out executable, or .s file if generating assembly)
+  -S, --assembly       Output assembly code (.s file) instead of an executable
+  --ast                Print the combined Abstract Syntax Tree (AST) and exit
+  --tokens             Print tokens from the main input file and exit
+
+Examples:
+
+```bash
+# Compile to default executable (a.out)
+pangy examples/hello.pgy
+
+# Specify executable name
+pangy examples/hello.pgy -o my_program
+
+# Generate assembly code instead of executable
+pangy examples/hello.pgy -S
+pangy examples/hello.pgy -S -o hello.s
+
+# Print AST
+pangy examples/hello.pgy --ast
+
+# Print tokens
+pangy examples/hello.pgy --tokens
 ```
 
 ## Examples
@@ -44,4 +71,4 @@ examples/             # Example Pangy programs
 
 ## License
 
-MIT
+[MIT](./LICENSE)
