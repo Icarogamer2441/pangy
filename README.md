@@ -52,7 +52,7 @@ pangy examples/hello.pgy --tokens
 
 ## Examples
 
-- `examples/classinparams.pgy`: demonstrates passing class instances as parameters to methods.
+see [examples](./examples/) for examples.
 
 ## Recent Changes
 
