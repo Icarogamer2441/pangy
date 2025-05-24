@@ -1,5 +1,5 @@
 from .parser_lexer import (
-    ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode,
+    ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode, Token,
     ParamNode, IntegerLiteralNode, IdentifierNode, ThisNode,
     MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, ReturnNode, StringLiteralNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode,
     MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode,
