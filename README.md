@@ -259,11 +259,15 @@ Accessing an element with an index out of bounds (less than 0 or greater than or
 ### Built-in List Functions
 
 - `length(list_ptr) -> int`
-  Returns the current number of elements in the list.
+  Returns the current number of elements in the list. Also works with strings to get the number of characters.
   ```pangy
   var numbers int[] = {1, 2, 3, 4}
   var len int = length(numbers) // len will be 4
   print("List length: ", len)
+  
+  var text string = "Hello"
+  var textLen int = length(text) // textLen will be 5
+  print("String length: ", textLen)
   ```
 
 - `append(list_ptr, value) -> list_ptr`
@@ -435,6 +439,51 @@ if (str1 < str2) {
 String comparisons are case-sensitive and follow lexicographical ordering (dictionary order).
 
 The compiler performs type checking to ensure that you only compare values of the same type. Attempting to compare a string with an integer will result in a compilation error.
+
+### String Functions
+
+Pangy provides built-in functions for working with strings:
+
+- `length(str) -> int`
+  Returns the number of characters in the string.
+  ```pangy
+  var text string = "Hello, world!"
+  var len int = length(text) // len will be 13
+  print("String length: ", len)
+  ```
+
+- `index(str, position) -> int`
+  Returns the ASCII value of the character at the specified position (zero-based index).
+  ```pangy
+  var text string = "Hello"
+  var char int = index(text, 0) // char will be 72 (ASCII for 'H')
+  print("First character: ", char)
+  
+  // Display as character instead of ASCII value
+  print("First character: ", index(text, 0).as_string())  // Prints 'H' instead of 72
+  ```
+  
+  Accessing an index out of bounds (negative or beyond the string length) will result in a runtime error.
+
+### Type Display Control
+
+Pangy allows you to control how values are displayed in print statements using the following methods:
+
+- `.as_string()` - Displays an integer value as its corresponding ASCII character
+  ```pangy
+  var ascii int = 65
+  print(ascii)            // Prints: 65
+  print(ascii.as_string()) // Prints: A
+  
+  print(index("Hello", 0))           // Prints: 72 (ASCII value of 'H')
+  print(index("Hello", 0).as_string()) // Prints: H
+  ```
+
+- `.as_int()` - Explicitly displays a value as an integer (useful for clarity)
+  ```pangy
+  var value = index("9", 0)
+  print(value.as_int()) // Explicitly prints as integer: 57 (ASCII code for '9')
+  ```
 
 ## Command-Line Arguments
 

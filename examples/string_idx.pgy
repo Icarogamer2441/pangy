@@ -1,0 +1,17 @@
+class Main {
+    def main() -> void {
+        var str string = "Hello, World!"
+        print("str[0]: ", index(str, 0).as_string())
+        print("str length: ", length(str))
+
+        var i int = 0
+
+        loop {
+            if (i >= length(str)) {
+                stop
+            }
+            print("str[", i, "]: ", index(str, i).as_string())
+            i++
+        }
+    }
+}

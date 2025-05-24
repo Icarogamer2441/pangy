@@ -319,13 +319,37 @@ class Compiler:
         print_assembly = f"  # Print statement at L{node.lineno}\n"
         format_string_parts = []
         arg_expr_nodes = [] # For expressions that are not string literals themselves
+        format_types = []  # Track format type for each argument
 
         for i, expr in enumerate(node.expressions):
-            if isinstance(expr, StringLiteralNode):
+            # Check for type conversion method calls (.as_string(), .as_int(), etc.)
+            if isinstance(expr, MethodCallNode):
+                # Handle methods like index(str, 0).as_string() or variable.as_string()
+                if expr.method_name == "as_string":
+                    format_string_parts.append("%c")  # Use %c for character display
+                    arg_expr_nodes.append(expr.object_expr)
+                    format_types.append("char")  # Mark as character format
+                elif expr.method_name == "as_int":
+                    format_string_parts.append("%d")  # Use %d for integer display
+                    arg_expr_nodes.append(expr.object_expr)
+                    format_types.append("int")
+                else:
+                    # Default handling for other method calls
+                    node_type_for_print = self.get_expr_type(expr, context)
+                    if node_type_for_print == 'string':
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    else:
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+            elif isinstance(expr, StringLiteralNode):
                 format_string_parts.append(expr.value.replace("%", "%%"))
+                # No need to add to arg_expr_nodes or format_types for string literals
             elif isinstance(expr, IntegerLiteralNode):
                 format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
+                format_types.append("int")
             elif isinstance(expr, IdentifierNode):
                 # Determine type of identifier to use %s or %d
                 var_name = expr.value
@@ -337,14 +361,18 @@ class Compiler:
                 
                 if var_type == 'string':
                     format_string_parts.append("%s")
+                    format_types.append("string")
                 elif var_type == 'file':
                     # For file pointers, print as pointer value
                     format_string_parts.append("FILE*@%p")
+                    format_types.append("pointer")
                 # Add check for list types - printing a list variable directly prints its address (pointer)
                 elif var_type.endswith("[]"):
-                     format_string_parts.append("%p") # Print list pointer address
+                    format_string_parts.append("%p") # Print list pointer address
+                    format_types.append("pointer")
                 else: # Default to %d for int or unknown/other types for now
                     format_string_parts.append("%d")
+                    format_types.append("int")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, ArrayAccessNode):
                 # Determine element type for format specifier using our new helper method
@@ -352,40 +380,55 @@ class Compiler:
                 
                 if element_type_for_print == 'string':
                     format_string_parts.append("%s")
+                    format_types.append("string")
                 elif element_type_for_print == 'file': # If we ever have file[] and print file[i]
-                    format_string_parts.append("FILE*@%p") 
+                    format_string_parts.append("FILE*@%p")
+                    format_types.append("pointer")
                 else: # Default to %d for int[], int, or other/unknown element types
                     format_string_parts.append("%d")
+                    format_types.append("int")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, FunctionCallNode):
                 # Determine the function return type to use %s or %d
                 func_name = expr.name
                 if func_name == "input":  # input() returns string
                     format_string_parts.append("%s")
+                    format_types.append("string")
                 elif func_name == "to_int":  # to_int() returns int
                     format_string_parts.append("%d")
+                    format_types.append("int")
                 elif func_name == "to_string":  # to_string() returns string
                     format_string_parts.append("%s")
+                    format_types.append("string")
                 elif func_name == "open":  # open() returns file
                     format_string_parts.append("FILE*@%p")
+                    format_types.append("pointer")
+                elif func_name == "index":  # index() returns int (ASCII value)
+                    format_string_parts.append("%d")
+                    format_types.append("int")
                 else:  # Default to %d for unknown functions
                     format_string_parts.append("%d")
+                    format_types.append("int")
                 arg_expr_nodes.append(expr)
-            elif isinstance(expr, (MethodCallNode, BinaryOpNode, ThisNode)):
+            elif isinstance(expr, (BinaryOpNode, ThisNode)):
                 # Check the expression type using our method
                 node_type_for_print = self.get_expr_type(expr, context)
                 if node_type_for_print == 'string':
-                     format_string_parts.append("%s")
+                    format_string_parts.append("%s")
+                    format_types.append("string")
                 else:
-                    format_string_parts.append("%d") 
+                    format_string_parts.append("%d")
+                    format_types.append("int")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, MacroInvokeNode):
                 # For macro invocations, we'll assume they'll resolve to integers for now
                 format_string_parts.append("%d")
+                format_types.append("int")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, UnaryOpNode):
                 # Unary operations like ~a always result in integers
                 format_string_parts.append("%d")
+                format_types.append("int")
                 arg_expr_nodes.append(expr)
             else: 
                 raise CompilerError(f"Cannot print expression of type {type(expr)} at L{node.lineno}")
@@ -402,7 +445,14 @@ class Compiler:
         for i in range(min(num_val_args, len(printf_arg_regs)-1) - 1, -1, -1):
             print_assembly += self.visit(arg_expr_nodes[i], context)
             target_reg = printf_arg_regs[i+1]
-            print_assembly += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
+            
+            # Special handling for char format (%c)
+            if i < len(format_types) and format_types[i] == "char":
+                # For %c, we need to ensure only the low byte is used
+                print_assembly += f"  movzx {target_reg}, al # Load character (zero-extended) into {target_reg}\n"
+            else:
+                print_assembly += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
+                
         print_assembly += f"  lea {printf_arg_regs[0]}, {format_label}[rip] # Format string for printf\n"
         print_assembly += "  mov rax, 0 # Num SSE registers for variadic call\n"
         print_assembly += "  call printf\n"
@@ -482,6 +532,12 @@ class Compiler:
         return decl_assembly
 
     def visit_MethodCallNode(self, node: MethodCallNode, context):
+        # Special handling for .as_string() and .as_int() methods
+        if node.method_name in ["as_string", "as_int"]:
+            # These are just type annotations for print statements, not actual method calls
+            # Just evaluate the object expression and return its value
+            return self.visit(node.object_expr, context)
+            
         current_class_name, current_method_name = context 
         call_assembly = f"  # Method Call to {node.method_name} on {type(node.object_expr)} at L{node.method_name_token.lineno}\n"
         target_method_label = ""
@@ -615,17 +671,99 @@ class Compiler:
             return code
         elif node.name == "length":
             if len(node.arguments) != 1:
-                raise CompilerError(f"length() expects one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
-            code = f"  # length(list) call at L{node.name_token.lineno}\n"
-            code += self.visit(node.arguments[0], context) # List pointer in RAX
-            code += "  mov rdi, rax # List pointer for length check\n"
+                raise CompilerError(f"length() expects one argument (list or string), got {len(node.arguments)} at L{node.name_token.lineno}")
+            
+            # Add a unique ID to avoid duplicate labels
+            if not hasattr(self, 'next_length_label_id'):
+                self.next_length_label_id = 0
+            length_label_id = self.next_length_label_id
+            self.next_length_label_id += 1
+            
+            code = f"  # length(list|string) call at L{node.name_token.lineno}\n"
+            code += self.visit(node.arguments[0], context) # List/string pointer in RAX
+            
+            # Determine if the argument is a string or a list by checking its type
+            arg_type = self.get_expr_type(node.arguments[0], context)
+            
+            code += "  mov rdi, rax # Pointer for length check\n"
             code += "  cmp rdi, 0 # Check for null pointer \n"
-            code += f"  jne .L_length_not_null_{node.name_token.lineno}\n"
-            code += "  mov rax, 0 # Length of null list is 0\n"
-            code += f"  jmp .L_length_end_{node.name_token.lineno}\n"
-            code += f".L_length_not_null_{node.name_token.lineno}:\n"
-            code += "  mov rax, QWORD PTR [rdi + 8] # Load length from list_ptr + 8 bytes offset\n"
-            code += f".L_length_end_{node.name_token.lineno}:\n"
+            code += f"  jne .L_length_not_null_{node.name_token.lineno}_{length_label_id}\n"
+            code += "  mov rax, 0 # Length of null is 0\n"
+            code += f"  jmp .L_length_end_{node.name_token.lineno}_{length_label_id}\n"
+            code += f".L_length_not_null_{node.name_token.lineno}_{length_label_id}:\n"
+            
+            if arg_type == "string":
+                # For strings, use strlen
+                if "strlen" not in self.externs:
+                    self.externs.append("strlen")
+                code += "  call strlen # Get string length\n"
+            else:
+                # For lists, get length from list header
+                code += "  mov rax, QWORD PTR [rdi + 8] # Load length from list_ptr + 8 bytes offset\n"
+                
+            code += f".L_length_end_{node.name_token.lineno}_{length_label_id}:\n"
+            return code
+        elif node.name == "index":
+            if len(node.arguments) != 2:
+                raise CompilerError(f"index() expects two arguments (string, position), got {len(node.arguments)} at L{node.name_token.lineno}")
+            
+            # Add a unique ID to avoid duplicate labels
+            if not hasattr(self, 'next_index_label_id'):
+                self.next_index_label_id = 0
+            index_label_id = self.next_index_label_id
+            self.next_index_label_id += 1
+            
+            code = f"  # index(string, position) call at L{node.name_token.lineno}\n"
+            
+            # Get the string pointer
+            code += self.visit(node.arguments[0], context) # String pointer in RAX
+            code += "  mov r12, rax # Save string pointer to r12\n"
+            
+            # Get the index position
+            code += self.visit(node.arguments[1], context) # Index in RAX
+            code += "  mov r13, rax # Save index to r13\n"
+            
+            # Check for null string
+            code += "  cmp r12, 0 # Check for null string\n"
+            code += f"  jne .L_index_not_null_{node.name_token.lineno}_{index_label_id}\n"
+            
+            # Handle null string error
+            error_msg = self.new_string_label("Error: Cannot index a null string.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            code += f".L_index_not_null_{node.name_token.lineno}_{index_label_id}:\n"
+            
+            # Get string length using strlen for bounds check
+            if "strlen" not in self.externs:
+                self.externs.append("strlen")
+            code += "  mov rdi, r12 # String pointer for strlen\n"
+            code += "  call strlen # Get string length\n"
+            code += "  mov r14, rax # Save string length to r14\n"
+            
+            # Bounds check
+            code += "  cmp r13, 0 # Check if index < 0\n"
+            code += f"  jl .L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}\n"
+            code += "  cmp r13, r14 # Check if index >= length\n"
+            code += f"  jge .L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}\n"
+            code += f"  jmp .L_index_in_bounds_{node.name_token.lineno}_{index_label_id}\n"
+            
+            # Handle out of bounds error
+            code += f".L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}:\n"
+            error_msg = self.new_string_label("Error: String index out of bounds.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            # Get character at index
+            code += f".L_index_in_bounds_{node.name_token.lineno}_{index_label_id}:\n"
+            code += "  mov rax, r12 # String pointer\n"
+            code += "  add rax, r13 # Add index to get character address\n"
+            code += "  movzx rax, BYTE PTR [rax] # Load character (zero-extended to 64 bits)\n"
+            
             return code
         elif node.name == "append":
             if len(node.arguments) != 2:

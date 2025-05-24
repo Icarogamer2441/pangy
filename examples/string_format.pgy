@@ -1,0 +1,26 @@
+class Main {
+    def main() -> void {
+        var str string = "Hello, World!"
+        var num int = 65  // ASCII for 'A'
+        
+        // Demonstrating .as_string() and .as_int()
+        print("String: ", str)
+        print("ASCII value of 'H': ", index(str, 0))         // Prints: 72
+        print("Character H: ", index(str, 0).as_string())    // Prints: H
+        
+        print("\nNumber: ", num)                  // Prints: 65
+        print("As character: ", num.as_string())  // Prints: A
+        
+        // Testing with multiple characters
+        print("\nMultiple characters:")
+        print("H ASCII value: ", index(str, 0))
+        print("H character: ", index(str, 0).as_string())
+        print("e ASCII value: ", index(str, 1))
+        print("e character: ", index(str, 1).as_string())
+        
+        // Testing .as_int() explicitly
+        print("\nTesting .as_int():")
+        var digit string = "9"
+        print("ASCII value of '9': ", index(digit, 0).as_int())  // Prints: 57
+    }
+} 
