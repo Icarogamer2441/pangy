@@ -5,7 +5,9 @@ from .parser_lexer import (
     MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode,
     TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL,
     TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
-    TT_PLUSPLUS, TT_MINUSMINUS
+    TT_PLUSPLUS, TT_MINUSMINUS,
+    TT_AMPERSAND, TT_PIPE, TT_CARET, TT_TILDE,
+    TT_LSHIFT, TT_RSHIFT, TT_URSHIFT
 )
 # import itertools # Not strictly needed for current logic
 from types import SimpleNamespace # For getattr default
@@ -167,6 +169,14 @@ class Compiler:
         is_method_static = node.is_static
         is_entry_point_main = node.name == "main" and class_name == "Main" and not node.is_static # Default Main.main is instance
 
+        # Check if this is main() with argc/argv parameters
+        has_argc_argv = False
+        if (is_entry_point_main or (node.is_static and node.name == "main" and class_name == "Main")) and len(node.params) == 2:
+            # Check for main(argc int, argv string[]) pattern
+            if (node.params[0].name == "argc" and node.params[0].type == "int" and
+                node.params[1].name == "argv" and node.params[1].type == "string[]"):
+                has_argc_argv = True
+
         if is_entry_point_main or (node.is_static and node.name == "main" and class_name == "Main"):
             # This covers instance Main.main and static Main.main if we ever allow that as entry
             method_text_assembly += f".global main\nmain:\n"
@@ -238,11 +248,60 @@ class Compiler:
         if actual_stack_to_allocate > 0:
             method_text_assembly += f"  sub rsp, {actual_stack_to_allocate} # Allocate stack ({actual_stack_to_allocate})\n"
         
-        # Spill parameters from registers to their stack slots
-        # (No 'this' to spill for static methods from RDI unless it was a param)
-        for p_name, p_data in self.current_method_params.items():
-            if 'reg' in p_data:
-                method_text_assembly += f"  mov QWORD PTR [rbp {p_data['offset_rbp']}], {p_data['reg']} # Spill param {p_name}\n"
+        # Special handling for main with argc/argv
+        if has_argc_argv:
+            method_text_assembly += "  # Setting up argc and argv parameters from command line\n"
+            # argc is already in RDI, argv is already in RSI
+            argc_offset = self.current_method_params['argc']['offset_rbp']
+            argv_offset = self.current_method_params['argv']['offset_rbp']
+            
+            # Store argc directly
+            method_text_assembly += f"  mov QWORD PTR [rbp {argc_offset}], rdi # Store argc\n"
+            
+            # We need to convert the C-style argv (char**) to our string[] representation
+            # 1. Create a new list to hold the argv strings
+            method_text_assembly += "  # Convert C argv to Pangy string[]\n"
+            method_text_assembly += "  mov r12, rdi # Save argc to r12\n"
+            method_text_assembly += "  mov r13, rsi # Save argv to r13\n"
+            
+            # Allocate list with initial capacity = argc
+            method_text_assembly += "  # Allocate list for argv with capacity = argc\n"
+            method_text_assembly += "  imul rdi, 8  # Calculate size for elements (argc * 8)\n"
+            method_text_assembly += "  add rdi, 16  # Add space for header (capacity and length)\n"
+            method_text_assembly += "  call malloc  # Allocate memory for string[] list\n"
+            method_text_assembly += "  mov r14, rax # Save list pointer to r14\n"
+            
+            # Initialize list header (capacity and length)
+            method_text_assembly += "  # Initialize list header\n"
+            method_text_assembly += "  mov QWORD PTR [r14], r12 # Set capacity = argc\n"
+            method_text_assembly += "  mov QWORD PTR [r14 + 8], r12 # Set length = argc\n"
+            
+            # Loop through argv and copy pointers to our list
+            method_text_assembly += "  # Copy argv strings to our list\n"
+            method_text_assembly += "  xor rcx, rcx # Initialize counter\n"
+            method_text_assembly += ".L_argv_loop_start:\n"
+            method_text_assembly += "  cmp rcx, r12 # Compare counter with argc\n"
+            method_text_assembly += "  je .L_argv_loop_end # Exit loop if done\n"
+            
+            # Get argv[i] (string pointer)
+            method_text_assembly += "  mov rax, QWORD PTR [r13 + rcx*8] # Get argv[i]\n"
+            
+            # Store string pointer in our list
+            method_text_assembly += "  mov QWORD PTR [r14 + 16 + rcx*8], rax # Store in our list\n"
+            
+            # Increment counter and continue loop
+            method_text_assembly += "  inc rcx\n"
+            method_text_assembly += "  jmp .L_argv_loop_start\n"
+            method_text_assembly += ".L_argv_loop_end:\n"
+            
+            # Store our list pointer as the argv parameter
+            method_text_assembly += f"  mov QWORD PTR [rbp {argv_offset}], r14 # Store argv list pointer\n"
+        else:
+            # Spill parameters from registers to their stack slots
+            # (No 'this' to spill for static methods from RDI unless it was a param)
+            for p_name, p_data in self.current_method_params.items():
+                if 'reg' in p_data:
+                    method_text_assembly += f"  mov QWORD PTR [rbp {p_data['offset_rbp']}], {p_data['reg']} # Spill param {p_name}\n"
 
         method_text_assembly += self.visit(node.body)
         method_text_assembly += f"{epilogue_label}:\n"
@@ -322,6 +381,10 @@ class Compiler:
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, MacroInvokeNode):
                 # For macro invocations, we'll assume they'll resolve to integers for now
+                format_string_parts.append("%d")
+                arg_expr_nodes.append(expr)
+            elif isinstance(expr, UnaryOpNode):
+                # Unary operations like ~a always result in integers
                 format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
             else: 
@@ -1145,6 +1208,29 @@ class Compiler:
             op_assembly += "  cqo            # Sign-extend RAX into RDX:RAX\n"
             op_assembly += "  idiv rcx       # Quotient in RAX, Remainder in RDX\n"
             op_assembly += "  mov rax, rdx   # Move remainder from RDX to RAX\n"
+        # Bitwise operations
+        elif op_type == TT_AMPERSAND: # Bitwise AND: left & right
+            op_assembly += "  and rbx, rax   # RBX = RBX (left) & RAX (right)\n"
+            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
+        elif op_type == TT_PIPE: # Bitwise OR: left | right
+            op_assembly += "  or rbx, rax    # RBX = RBX (left) | RAX (right)\n"
+            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
+        elif op_type == TT_CARET: # Bitwise XOR: left ^ right
+            op_assembly += "  xor rbx, rax   # RBX = RBX (left) ^ RAX (right)\n"
+            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
+        # Shift operations
+        elif op_type == TT_LSHIFT: # Left shift: left << right
+            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
+            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
+            op_assembly += "  sal rax, cl    # RAX = RAX << CL (shift arithmetic left)\n"
+        elif op_type == TT_RSHIFT: # Right shift: left >> right (arithmetic shift)
+            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
+            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
+            op_assembly += "  sar rax, cl    # RAX = RAX >> CL (shift arithmetic right - sign extending)\n"
+        elif op_type == TT_URSHIFT: # Unsigned right shift: left >>> right (logical shift)
+            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
+            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
+            op_assembly += "  shr rax, cl    # RAX = RAX >>> CL (shift logical right - zero filling)\n"
         elif op_type == TT_LESS_THAN: 
             op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for <\n"
             # Result of cmp is in flags, to be used by conditional jumps (e.g., in IfNode)
@@ -1291,6 +1377,15 @@ class Compiler:
         # 2. Load current value from memory into RAX (this is the expression's result)
         # 3. Perform inc/dec on the memory location
 
+        assembly_code = f"  # UnaryOp {node.op_token.type} on {type(node.operand_node)} at L{node.lineno}\n"
+
+        # Handle bitwise NOT (~)
+        if node.op_token.type == TT_TILDE:
+            assembly_code += self.visit(node.operand_node, context) # Result in RAX
+            assembly_code += "  not rax      # Bitwise NOT\n"
+            return assembly_code
+
+        # Handle postfix increment/decrement (++, --)
         if not isinstance(node.operand_node, IdentifierNode):
             # For now, only allow inc/dec on simple identifiers (variables).
             # Future: could extend to array elements or fields if they become L-values.
@@ -1298,7 +1393,6 @@ class Compiler:
 
         var_name = node.operand_node.value
         var_info = None
-        assembly_code = f"  # UnaryOp {node.op_token.type} on {var_name} at L{node.lineno}\n"
 
         if var_name in self.current_method_locals:
             var_info = self.current_method_locals[var_name]

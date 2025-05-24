@@ -317,6 +317,49 @@ class ListDemo {
 
 ```
 
+## Bitwise Operations and Shift Operations
+
+Pangy supports bitwise operations and shift operations on integer values.
+
+### Bitwise Operators
+
+| Operator | Name        | Description                             |
+|----------|-------------|-----------------------------------------|
+| `&`      | Bitwise AND | Returns 1 for each bit position where both operands have 1 |
+| `\|`     | Bitwise OR  | Returns 1 for each bit position where at least one operand has 1 |
+| `^`      | Bitwise XOR | Returns 1 for each bit position where exactly one operand has 1 |
+| `~`      | Bitwise NOT | Inverts all bits (unary operator)       |
+
+### Shift Operators
+
+| Operator | Name                 | Description                             |
+|----------|----------------------|-----------------------------------------|
+| `<<`     | Left Shift           | Shifts bits left, filling with zeros    |
+| `>>`     | Right Shift          | Shifts bits right, preserving sign bit  |
+| `>>>`    | Unsigned Right Shift | Shifts bits right, filling with zeros   |
+
+### Example
+
+```pangy
+class Main {
+    def main() -> void {
+        var a int = 10  // 1010 in binary
+        var b int = 20  // 10100 in binary
+
+        print("a & b = ", a & b)    // Bitwise AND: 0 (0000)
+        print("a | b = ", a | b)    // Bitwise OR: 30 (11110)
+        print("a ^ b = ", a ^ b)    // Bitwise XOR: 30 (11110)
+        print("~a = ", ~a)          // Bitwise NOT: -11 (inversion of all bits)
+        
+        print("a << 1 = ", a << 1)  // Left shift by 1: 20 (10100)
+        print("a >> 1 = ", a >> 1)  // Right shift by 1: 5 (101)
+        print("a >>> 1 = ", a >>> 1) // Unsigned right shift by 1: 5 (101)
+    }
+}
+```
+
+Bitwise and shift operations are useful for low-level bit manipulation, implementing certain algorithms efficiently, and working with binary data.
+
 ## Compilation
 
 To compile a Pangy program:
@@ -392,3 +435,54 @@ if (str1 < str2) {
 String comparisons are case-sensitive and follow lexicographical ordering (dictionary order).
 
 The compiler performs type checking to ensure that you only compare values of the same type. Attempting to compare a string with an integer will result in a compilation error.
+
+## Command-Line Arguments
+
+Pangy supports command-line arguments through the `main` method's parameters. You can access these arguments by defining your `main` method with the following signature:
+
+```pangy
+class Main {
+    def main(argc int, argv string[]) -> void {
+        // argc is the number of arguments (including the program name)
+        // argv is an array of string arguments
+    }
+}
+```
+
+### Example
+
+```pangy
+class Main {
+    def main(argc int, argv string[]) -> void {
+        print("Number of arguments: ", argc)
+        
+        var i int = 0
+        loop {
+            if (i >= argc) {
+                stop
+            }
+            
+            print("Argument ", i, ": ", argv[i])
+            i++
+        }
+    }
+}
+```
+
+When you run this program with command-line arguments:
+
+```bash
+./my_program arg1 arg2 arg3
+```
+
+The output will be:
+
+```
+Number of arguments: 4
+Argument 0: ./my_program
+Argument 1: arg1
+Argument 2: arg2
+Argument 3: arg3
+```
+
+**Note**: The first argument (`argv[0]`) is always the program name, following the traditional C/C++ convention.

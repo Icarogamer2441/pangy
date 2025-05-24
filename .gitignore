@@ -49,6 +49,8 @@ files
 matrixes
 lists
 strcmp
+args
+bitandshifts
 
 # Logs
 *.log

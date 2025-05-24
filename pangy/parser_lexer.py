@@ -57,6 +57,17 @@ TT_STOP = 'STOP' # For stop keyword
 TT_LBRACKET = 'LBRACKET' # For '['
 TT_RBRACKET = 'RBRACKET' # For ']'
 
+# Tokens for bitwise operations
+TT_AMPERSAND = 'AMPERSAND'  # For '&' (bitwise AND)
+TT_PIPE = 'PIPE'            # For '|' (bitwise OR)
+TT_CARET = 'CARET'          # For '^' (bitwise XOR)
+TT_TILDE = 'TILDE'          # For '~' (bitwise NOT)
+
+# Tokens for shift operations
+TT_LSHIFT = 'LSHIFT'        # For '<<' (left shift)
+TT_RSHIFT = 'RSHIFT'        # For '>>' (right shift)
+TT_URSHIFT = 'URSHIFT'      # For '>>>' (unsigned right shift)
+
 class Token:
     def __init__(self, type, value, lineno=0, colno=0):
         self.type = type
@@ -296,15 +307,55 @@ class Lexer:
                 self.advance()
                 return token
             
+            # Bitwise AND operator '&'
+            if self.current_char == '&':
+                token = Token(TT_AMPERSAND, '&', self.lineno, start_col)
+                self.advance()
+                return token
+                
+            # Bitwise OR operator '|'
+            if self.current_char == '|':
+                token = Token(TT_PIPE, '|', self.lineno, start_col)
+                self.advance()
+                return token
+                
+            # Bitwise XOR operator '^'
+            if self.current_char == '^':
+                token = Token(TT_CARET, '^', self.lineno, start_col)
+                self.advance()
+                return token
+                
+            # Bitwise NOT operator '~'
+            if self.current_char == '~':
+                token = Token(TT_TILDE, '~', self.lineno, start_col)
+                self.advance()
+                return token
+            
             # Comparison operators: <=, <, >=, >
             if self.current_char == '<' and self.pos + 1 < len(self.text) and self.text[self.pos+1] == '=':
                 self.advance()
                 self.advance()
                 return Token(TT_LESS_EQUAL, '<=', self.lineno, start_col)
+            # Left shift operator '<<'
+            if self.current_char == '<' and self.pos + 1 < len(self.text) and self.text[self.pos+1] == '<':
+                self.advance()
+                self.advance()
+                return Token(TT_LSHIFT, '<<', self.lineno, start_col)
             if self.current_char == '<':
                 token = Token(TT_LESS_THAN, '<', self.lineno, start_col)
                 self.advance()
                 return token
+            # Unsigned right shift operator '>>>'
+            if self.current_char == '>' and self.pos + 2 < len(self.text) and self.text[self.pos+1] == '>' and self.text[self.pos+2] == '>':
+                self.advance()
+                self.advance()
+                self.advance()
+                return Token(TT_URSHIFT, '>>>', self.lineno, start_col)
+            # Right shift operator '>>'
+            if self.current_char == '>' and self.pos + 1 < len(self.text) and self.text[self.pos+1] == '>':
+                self.advance()
+                self.advance()
+                return Token(TT_RSHIFT, '>>', self.lineno, start_col)
             if self.current_char == '>' and self.pos + 1 < len(self.text) and self.text[self.pos+1] == '=':
                 self.advance()
                 self.advance()
@@ -930,11 +981,31 @@ class Parser:
         return self.parse_comparison_expression()
 
     def parse_comparison_expression(self):
-        # comparison_expression ::= additive_expression ( (LT | GT | LE | GE | EQ | NE) additive_expression )*
-        node = self.parse_additive_expression()
+        # comparison_expression ::= bitwise_expression ( (LT | GT | LE | GE | EQ | NE) bitwise_expression )*
+        node = self.parse_bitwise_expression()
 
         while self.current_token.type in [TT_LESS_THAN, TT_GREATER_THAN, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_EQUAL, TT_NOT_EQUAL]:
             op_token = self.consume(self.current_token.type) # Consume comparison operator
+            right_node = self.parse_bitwise_expression()
+            node = BinaryOpNode(node, op_token, right_node)
+        return node
+
+    def parse_bitwise_expression(self):
+        # bitwise_expression ::= shift_expression ( (& | | | ^) shift_expression )*
+        node = self.parse_shift_expression()
+
+        while self.current_token.type in [TT_AMPERSAND, TT_PIPE, TT_CARET]:
+            op_token = self.consume(self.current_token.type) # Consume bitwise operator
+            right_node = self.parse_shift_expression()
+            node = BinaryOpNode(node, op_token, right_node)
+        return node
+        
+    def parse_shift_expression(self):
+        # shift_expression ::= additive_expression ( (<< | >> | >>>) additive_expression )*
+        node = self.parse_additive_expression()
+
+        while self.current_token.type in [TT_LSHIFT, TT_RSHIFT, TT_URSHIFT]:
+            op_token = self.consume(self.current_token.type) # Consume shift operator
             right_node = self.parse_additive_expression()
             node = BinaryOpNode(node, op_token, right_node)
         return node
@@ -950,15 +1021,23 @@ class Parser:
         return node
 
     def parse_multiplicative_expression(self):
-        # multiplicative_expression ::= term ( (STAR | SLASH | PERCENT) term )*
-        node = self.parse_term() # Higher precedence items
+        # multiplicative_expression ::= unary_expression ( (STAR | SLASH | PERCENT) unary_expression )*
+        node = self.parse_unary_expression()
 
         while self.current_token.type in [TT_STAR, TT_SLASH, TT_PERCENT]:
             op_token = self.consume(self.current_token.type) # Consume *, /, or %
-            right_node = self.parse_term()
+            right_node = self.parse_unary_expression()
             node = BinaryOpNode(node, op_token, right_node)
         return node
-
+        
+    def parse_unary_expression(self):
+        # unary_expression ::= (TILDE)? term
+        if self.current_token.type == TT_TILDE:  # Bitwise NOT (~)
+            op_token = self.consume(TT_TILDE)
+            operand = self.parse_term()
+            return UnaryOpNode(op_token, operand)
+        return self.parse_term()
+        
     def parse_term(self):
         # term ::= primary ( ( "." | ":" ) IDENTIFIER "(" arguments? ")" | "++" | "--" | "(" arguments ")" | "[" expression "]" )* 
         node = self.parse_primary()

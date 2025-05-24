@@ -1,0 +1,15 @@
+class Main {
+    def main(argc int, argv string[]) -> void {
+        print("argc: ", argc)
+        var i int = 0
+
+        loop {
+            if (i >= argc) {
+                stop
+            }
+
+            print("argv[", i, "]: ", argv[i])
+            i++
+        }
+    }
+}

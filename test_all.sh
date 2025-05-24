@@ -14,6 +14,8 @@ pangy examples/files.pgy -o files
 pangy examples/lists.pgy -o lists
 pangy examples/matrixes.pgy -o matrixes
 pangy examples/strcmp.pgy -o strcmp
+pangy examples/args.pgy -o args
+pangy examples/bitandshifts.pgy -o bitandshifts
 
 echo "Running hello..."
 ./hello
@@ -63,5 +65,11 @@ echo "--------------------------------"
 echo "Running strcmp..."
 ./strcmp
 echo "--------------------------------"
+echo "Running args..."
+./args testing "this is a test" abc
+echo "--------------------------------"
+echo "Running bitandshifts..."
+./bitandshifts
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts
