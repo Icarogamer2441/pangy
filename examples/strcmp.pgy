@@ -1,0 +1,12 @@
+class Main {
+    def main() -> void {
+        var str string = input("Say hello: ")
+        var correct_str string = "hello"
+
+        if (str == correct_str) {
+            print("You said hello!")
+        } else {
+            print("You didn't say hello!")
+        }
+    }
+}

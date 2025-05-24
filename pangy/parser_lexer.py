@@ -139,11 +139,38 @@ class Lexer:
         start_col = self.colno
         self.advance() # Skip the opening quote
         while self.current_char is not None and self.current_char != '"':
-            if self.current_char == '\\': # Handle escaped characters like \" or \\
+            if self.current_char == '\\': # Handle escaped characters
                 self.advance()
                 if self.current_char is None:
                     raise Exception(f"LexerError: Unterminated string literal at L{self.lineno}:C{start_col}")
-            result += self.current_char
+                
+                # Process escape sequence
+                if self.current_char == 'n':
+                    result += '\n'  # Newline
+                elif self.current_char == 't':
+                    result += '\t'  # Tab
+                elif self.current_char == 'r':
+                    result += '\r'  # Carriage return
+                elif self.current_char == '"':
+                    result += '"'   # Double quote
+                elif self.current_char == '\'':
+                    result += '\''  # Single quote
+                elif self.current_char == '\\':
+                    result += '\\'  # Backslash
+                elif self.current_char == '0':
+                    result += '\0'  # Null character
+                elif self.current_char == 'b':
+                    result += '\b'  # Backspace
+                elif self.current_char == 'f':
+                    result += '\f'  # Form feed
+                elif self.current_char == 'v':
+                    result += '\v'  # Vertical tab
+                else:
+                    # For any other character, just include it literally
+                    # This allows for things like \x which would just be 'x'
+                    result += self.current_char
+            else:
+                result += self.current_char
             self.advance()
         
         if self.current_char is None: # Unterminated string

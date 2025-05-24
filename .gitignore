@@ -48,6 +48,7 @@ inputsandtypes
 files
 matrixes
 lists
+strcmp
 
 # Logs
 *.log

@@ -13,6 +13,7 @@ pangy examples/inputsandtypes.pgy -o inputsandtypes
 pangy examples/files.pgy -o files
 pangy examples/lists.pgy -o lists
 pangy examples/matrixes.pgy -o matrixes
+pangy examples/strcmp.pgy -o strcmp
 
 echo "Running hello..."
 ./hello
@@ -59,5 +60,8 @@ echo "--------------------------------"
 echo "Running matrixes..."
 ./matrixes
 echo "--------------------------------"
+echo "Running strcmp..."
+./strcmp
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp

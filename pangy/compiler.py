@@ -43,11 +43,17 @@ class Compiler:
         label = f".LC{self.next_string_label_id}"
         self.string_literals[value] = label
         self.next_string_label_id += 1
-        escaped_value = value.replace('\\', '\\\\') \
-                             .replace('"', '\\"') \
-                             .replace('\n', '\\n') \
-                             .replace('\t', '\\t') \
-                             .replace('\0', '\\0')
+        # Escape special characters for assembly
+        escaped_value = value.replace('\\', '\\\\')  # Must be first to avoid double-escaping
+        escaped_value = escaped_value.replace('"', '\\"')
+        escaped_value = escaped_value.replace('\n', '\\n')
+        escaped_value = escaped_value.replace('\t', '\\t')
+        escaped_value = escaped_value.replace('\r', '\\r')
+        escaped_value = escaped_value.replace('\0', '\\0')
+        escaped_value = escaped_value.replace('\b', '\\b')
+        escaped_value = escaped_value.replace('\f', '\\f')
+        escaped_value = escaped_value.replace('\v', '\\v')
+        escaped_value = escaped_value.replace('\'', '\\\'')
         self.data_section_code += f'{label}:\n  .string "{escaped_value}"\n'
         return label
 
@@ -55,16 +61,17 @@ class Compiler:
         label = f".LCPF{self.next_printf_format_label_id}"
         self.next_printf_format_label_id += 1
         
-        # Escape for .asciz directive in GAS:
-        # 1. literal \ (backslash) becomes \\ (two backslashes)
-        # 2. literal " (double quote) becomes \" (backslash, double quote)
-        # 3. literal newline (char code 10) becomes the sequence \n (backslash, n)
-        # 4. literal tab (char code 9) becomes the sequence \t (backslash, t)
-        # Add other C-style escapes as needed.
-        escaped_for_asciz = fmt_string_value.replace('\\', '\\\\') \
-                                           .replace('"', '\\"') \
-                                           .replace('\n', '\\n') \
-                                           .replace('\t', '\\t')
+        # Escape special characters for assembly
+        escaped_for_asciz = fmt_string_value.replace('\\', '\\\\')  # Must be first to avoid double-escaping
+        escaped_for_asciz = escaped_for_asciz.replace('"', '\\"')
+        escaped_for_asciz = escaped_for_asciz.replace('\n', '\\n')
+        escaped_for_asciz = escaped_for_asciz.replace('\t', '\\t')
+        escaped_for_asciz = escaped_for_asciz.replace('\r', '\\r')
+        escaped_for_asciz = escaped_for_asciz.replace('\0', '\\0')
+        escaped_for_asciz = escaped_for_asciz.replace('\b', '\\b')
+        escaped_for_asciz = escaped_for_asciz.replace('\f', '\\f')
+        escaped_for_asciz = escaped_for_asciz.replace('\v', '\\v')
+        escaped_for_asciz = escaped_for_asciz.replace('\'', '\\\'')
         
         self.data_section_code += f'{label}:\n  .asciz "{escaped_for_asciz}"\n'
         return label
@@ -992,13 +999,28 @@ class Compiler:
     def visit_BinaryOpNode(self, node: BinaryOpNode, context):
         op_assembly = f"  # BinaryOp: {node.op} (type: {node.op_token.type}) at L{node.op_token.lineno}\n"
         
+        # Get types for both operands
+        left_type = self.get_expr_type(node.left, context)
+        right_type = self.get_expr_type(node.right, context)
+        
+        # Type checking for comparison operations
+        if node.op_token.type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
+                                  TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
+            # Check that both operands are of the same type for comparison
+            if left_type != right_type and left_type != "unknown" and right_type != "unknown":
+                raise CompilerError(f"Cannot compare values of different types: {left_type} and {right_type} at L{node.op_token.lineno}")
+        
         # Check if this is a string concatenation
         is_string_concat = False
+        is_string_comparison = False
+        
         if node.op_token.type == TT_PLUS:
-            left_type = self.get_expr_type(node.left, context)
-            right_type = self.get_expr_type(node.right, context)
             if left_type == "string" or right_type == "string":
                 is_string_concat = True
+        elif node.op_token.type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
+                                    TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
+            if left_type == "string" and right_type == "string":
+                is_string_comparison = True
         
         if is_string_concat:
             # String concatenation
@@ -1048,6 +1070,45 @@ class Compiler:
             op_assembly += "  add rsp, 16 # Pop strings\n"
             
             # Result is in RAX (buffer pointer)
+            return op_assembly
+        
+        # For string comparison operations
+        elif is_string_comparison:
+            # Add strcmp to externs if not already there
+            if "strcmp" not in self.externs:
+                self.externs.append("strcmp")
+                
+            op_assembly += self.visit(node.left, context)  # Result in RAX
+            op_assembly += "  push rax # Save left string\n"
+            
+            op_assembly += self.visit(node.right, context) # Result in RAX
+            op_assembly += "  mov rsi, rax # Right string in RSI\n"
+            op_assembly += "  pop rdi # Left string in RDI\n"
+            
+            # Call strcmp to compare the strings
+            op_assembly += "  call strcmp # Compare strings\n"
+            
+            # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
+            # For if statements, we'll handle comparison directly in visit_IfNode
+            # For expressions, we need to set RAX to 0 or 1
+            op_type = node.op_token.type
+            
+            if op_type == TT_EQUAL:
+                op_assembly += "  test rax, rax # Check if strcmp result is 0 (strings equal)\n"
+            elif op_type == TT_NOT_EQUAL:
+                op_assembly += "  test rax, rax # Check if strcmp result is not 0 (strings not equal)\n"
+            elif op_type == TT_LESS_THAN:
+                op_assembly += "  cmp rax, 0 # Check if strcmp result < 0\n"
+            elif op_type == TT_LESS_EQUAL:
+                op_assembly += "  cmp rax, 1 # Check if strcmp result <= 0\n"
+            elif op_type == TT_GREATER_THAN:
+                op_assembly += "  cmp rax, 0 # Check if strcmp result > 0\n"
+            elif op_type == TT_GREATER_EQUAL:
+                op_assembly += "  cmp rax, -1 # Check if strcmp result >= 0\n"
+            
+            # Note: For if statements, these comparison results will be used 
+            # by conditional jumps in visit_IfNode
+            
             return op_assembly
             
         # Non-string operations
@@ -1166,23 +1227,53 @@ class Compiler:
     def visit_IfNode(self, node: IfNode, context):
         if_assembly = f"  # If statement at L{node.lineno}\n"
         else_label, end_if_label = self.new_if_labels()
+        
+        # Check if the condition is a string comparison
+        is_string_comparison = False
+        if isinstance(node.condition, BinaryOpNode):
+            left_type = self.get_expr_type(node.condition.left, context)
+            right_type = self.get_expr_type(node.condition.right, context)
+            if left_type == "string" and right_type == "string":
+                is_string_comparison = True
+        
         if_assembly += self.visit(node.condition, context)
         jump_instruction = ""
         op_type = node.condition.op_token.type
-        if op_type == TT_LESS_THAN:
-            jump_instruction = "jge"
-        elif op_type == TT_GREATER_THAN:
-            jump_instruction = "jle"
-        elif op_type == TT_LESS_EQUAL:
-            jump_instruction = "jg"
-        elif op_type == TT_GREATER_EQUAL:
-            jump_instruction = "jl"
-        elif op_type == TT_EQUAL:
-            jump_instruction = "jne"
-        elif op_type == TT_NOT_EQUAL:
-            jump_instruction = "je"
+        
+        if is_string_comparison:
+            # For string comparisons, the result of strcmp is in RAX
+            # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
+            if op_type == TT_LESS_THAN:
+                jump_instruction = "jge" # Jump if RAX >= 0 (not less)
+            elif op_type == TT_GREATER_THAN:
+                jump_instruction = "jle" # Jump if RAX <= 0 (not greater)
+            elif op_type == TT_LESS_EQUAL:
+                jump_instruction = "jg"  # Jump if RAX > 0 (not less/equal)
+            elif op_type == TT_GREATER_EQUAL:
+                jump_instruction = "jl"  # Jump if RAX < 0 (not greater/equal)
+            elif op_type == TT_EQUAL:
+                jump_instruction = "jne" # Jump if RAX != 0 (not equal)
+            elif op_type == TT_NOT_EQUAL:
+                jump_instruction = "je"  # Jump if RAX == 0 (equal)
+            else:
+                raise CompilerError(f"Unsupported string comparison operator '{op_type}' in if. L{node.condition.op_token.lineno}")
         else:
-            raise CompilerError(f"Unsupported comparison operator '{node.condition.op_token.type}' in if. L{node.condition.op_token.lineno}")
+            # For integer comparisons, we use the flags set by cmp instruction
+            if op_type == TT_LESS_THAN:
+                jump_instruction = "jge"
+            elif op_type == TT_GREATER_THAN:
+                jump_instruction = "jle"
+            elif op_type == TT_LESS_EQUAL:
+                jump_instruction = "jg"
+            elif op_type == TT_GREATER_EQUAL:
+                jump_instruction = "jl"
+            elif op_type == TT_EQUAL:
+                jump_instruction = "jne"
+            elif op_type == TT_NOT_EQUAL:
+                jump_instruction = "je"
+            else:
+                raise CompilerError(f"Unsupported comparison operator '{node.condition.op_token.type}' in if. L{node.condition.op_token.lineno}")
+        
         jump_target = else_label if node.else_block else end_if_label
         if_assembly += f"  {jump_instruction} {jump_target}\n"
         if_assembly += self.visit(node.then_block, context)

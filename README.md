@@ -9,6 +9,7 @@ Pangy is a custom programming language with its own compiler, designed to compil
 - Control structures (if/else, loops)
 - Variables with type declarations
 - Support for basic data types (int, string)
+- String operations (concatenation, comparison)
 - Macro system with object context support
 - Print statements with variable substitution
 - Module system with selective imports
@@ -329,3 +330,65 @@ Options:
 - `-S` - Output assembly instead of an executable
 - `--ast` - Print the abstract syntax tree
 - `--tokens` - Print the lexical tokens
+
+## String Operations
+
+Pangy supports various string operations including concatenation and comparison.
+
+### String Literals and Escape Sequences
+
+String literals are enclosed in double quotes and support the following escape sequences:
+
+| Escape Sequence | Description |
+|-----------------|-------------|
+| `\"` | Double quote |
+| `\'` | Single quote |
+| `\\` | Backslash |
+| `\n` | Newline |
+| `\t` | Tab |
+| `\r` | Carriage return |
+| `\0` | Null character |
+| `\b` | Backspace |
+| `\f` | Form feed |
+| `\v` | Vertical tab |
+
+Example:
+```pangy
+var message string = "Line 1\nLine 2\nLine 3"
+print("Tab-separated items:\t1\t2\t3")
+print("Quotes: \"quoted text\"")
+```
+
+### String Concatenation
+
+Strings can be concatenated using the `+` operator:
+
+```pangy
+var greeting string = "Hello, "
+var name string = "World"
+var message string = greeting + name
+print(message)  // Prints "Hello, World"
+```
+
+### String Comparison
+
+Strings can be compared using the comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`):
+
+```pangy
+var str1 string = "hello"
+var str2 string = "world"
+
+if (str1 == str2) {
+    print("Strings are equal")
+} else {
+    print("Strings are not equal")
+}
+
+if (str1 < str2) {
+    print("str1 comes before str2 alphabetically")
+}
+```
+
+String comparisons are case-sensitive and follow lexicographical ordering (dictionary order).
+
+The compiler performs type checking to ensure that you only compare values of the same type. Attempting to compare a string with an integer will result in a compilation error.
