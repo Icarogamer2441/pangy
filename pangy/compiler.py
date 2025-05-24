@@ -2,7 +2,7 @@ from .parser_lexer import (
     ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode,
     ParamNode, IntegerLiteralNode, IdentifierNode, ThisNode,
     MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, ReturnNode, StringLiteralNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode,
-    MacroDefNode, MacroInvokeNode,
+    MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode,
     TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL,
     TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
     TT_PLUSPLUS, TT_MINUSMINUS
@@ -22,7 +22,9 @@ class Compiler:
         self.next_string_label_id = 0
         self.next_printf_format_label_id = 0
         self.next_if_label_id = 0 # For if/else labels
-        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets"] # Added file operation externs
+        self.next_loop_id = 0 # For loop labels
+        self.next_list_header_label_id = 0 # For list static data
+        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen"] # Added realloc, memcpy, strlen
         
         self.current_method_params = {}
         self.current_method_locals = {} # For local variables
@@ -30,10 +32,10 @@ class Compiler:
         self.current_method_total_stack_needed = 0 # For params + locals in prologue
         self.current_method_context = None
         # For loop support
-        self.next_loop_id = 0
         self.loop_end_labels = []
         # For macro support
         self.macros = {} # Maps macro names to MacroDefNode objects
+        self.array_access_counter = 0
 
     def new_string_label(self, value):
         if value in self.string_literals:
@@ -72,6 +74,11 @@ class Compiler:
         self.next_if_label_id += 1
         return f".L_else_{idx}", f".L_end_if_{idx}"
 
+    def new_list_header_label(self): # For potential static list data, though lists are dynamic
+        idx = self.next_list_header_label_id
+        self.next_list_header_label_id += 1
+        return f".LH{idx}"
+
     def visit(self, node, context_override=None):
         effective_context = context_override if context_override is not None else self.current_method_context
         method_name = f"visit_{node.__class__.__name__}"
@@ -94,15 +101,17 @@ class Compiler:
         
         # Declare externs for GAS
         temp_externs = list(self.externs) # Use a copy in case self.externs is modified
-        if "malloc" not in temp_externs: # Add malloc if not already present (e.g. by .new() detection)
-            temp_externs.append("malloc")
+        # Ensure essential externs like malloc, realloc, memcpy, strlen are present
+        for essential_extern in ["malloc", "realloc", "memcpy", "strlen", "printf", "exit"]:
+            if essential_extern not in temp_externs:
+                temp_externs.append(essential_extern)
         
         for ext_symbol in temp_externs:
             self.text_section_code += f".extern {ext_symbol}\n"
         self.text_section_code += "\n" # Blank line after externs
 
         self.string_literals = {}
-        self.next_string_label_id = 0; self.next_printf_format_label_id = 0; self.next_if_label_id = 0
+        self.next_string_label_id = 0; self.next_printf_format_label_id = 0; self.next_if_label_id = 0; self.next_loop_id = 0; self.next_list_header_label_id = 0
         self.current_method_params = {}; self.current_method_stack_offset = 0
         self.current_method_total_stack_needed = 0; self.current_method_context = None
         
@@ -178,25 +187,46 @@ class Compiler:
                 param_data['reg'] = explicit_param_arg_regs[i]
             self.current_method_params[p_node.name] = param_data
 
-        local_stack_needed_for_vars = 0
-        current_rbp_offset_for_locals = current_rbp_offset_for_params 
-        if isinstance(node.body, BlockNode):
-            for stmt in node.body.statements:
+        # Helper function to recursively find all variable declarations in a block
+        def find_var_declarations_in_block(block_node, variables_dict, current_rbp_offset):
+            if not isinstance(block_node, BlockNode):
+                return current_rbp_offset
+            
+            # First pass: collect all variable declarations
+            for stmt in block_node.statements:
                 if isinstance(stmt, VarDeclNode):
-                    var_size = 8 
-                    local_stack_needed_for_vars += var_size
-                    current_rbp_offset_for_locals -= var_size
-                    self.current_method_locals[stmt.name] = {
-                        'offset_rbp': current_rbp_offset_for_locals, 
-                        'type': stmt.type,
-                        'size': var_size,
-                        'is_initialized': False
-                    }
+                    var_size = 8  # Assuming all variables (including list pointers) need 8 bytes
+                    current_rbp_offset -= var_size
+                    if stmt.name not in variables_dict:  # Only add if not already declared in outer scope
+                        variables_dict[stmt.name] = {
+                            'offset_rbp': current_rbp_offset, 
+                            'type': stmt.type,
+                            'size': var_size,
+                            'is_initialized': False
+                        }
+                
+                # Recursively search in nested blocks
+                elif isinstance(stmt, IfNode):
+                    current_rbp_offset = find_var_declarations_in_block(stmt.then_block, variables_dict, current_rbp_offset)
+                    if stmt.else_block:
+                        current_rbp_offset = find_var_declarations_in_block(stmt.else_block, variables_dict, current_rbp_offset)
+                elif isinstance(stmt, LoopNode):
+                    current_rbp_offset = find_var_declarations_in_block(stmt.body, variables_dict, current_rbp_offset)
+            
+            return current_rbp_offset
+
+        # Start from the current offset after parameters
+        current_rbp_offset_for_locals = current_rbp_offset_for_params
+        current_rbp_offset_for_locals = find_var_declarations_in_block(node.body, self.current_method_locals, current_rbp_offset_for_locals)
         
+        # Calculate total stack space needed
+        local_stack_needed_for_vars = abs(current_rbp_offset_for_locals - current_rbp_offset_for_params)
         self.current_method_total_stack_needed = local_stack_needed_for_params + local_stack_needed_for_vars
         actual_stack_to_allocate = self.current_method_total_stack_needed
+        
+        # Ensure stack alignment (16 bytes)
         if actual_stack_to_allocate % 16 != 0:
-             actual_stack_to_allocate = ((actual_stack_to_allocate // 16) + 1) * 16
+            actual_stack_to_allocate = ((actual_stack_to_allocate // 16) + 1) * 16
         
         if actual_stack_to_allocate > 0:
             method_text_assembly += f"  sub rsp, {actual_stack_to_allocate} # Allocate stack ({actual_stack_to_allocate})\n"
@@ -244,7 +274,21 @@ class Compiler:
                 elif var_type == 'file':
                     # For file pointers, print as pointer value
                     format_string_parts.append("FILE*@%p")
+                # Add check for list types - printing a list variable directly prints its address (pointer)
+                elif var_type.endswith("[]"):
+                     format_string_parts.append("%p") # Print list pointer address
                 else: # Default to %d for int or unknown/other types for now
+                    format_string_parts.append("%d")
+                arg_expr_nodes.append(expr)
+            elif isinstance(expr, ArrayAccessNode):
+                # Determine element type for format specifier using our new helper method
+                element_type_for_print = self.get_array_element_type(expr.array_expr, context)
+                
+                if element_type_for_print == 'string':
+                    format_string_parts.append("%s")
+                elif element_type_for_print == 'file': # If we ever have file[] and print file[i]
+                    format_string_parts.append("FILE*@%p") 
+                else: # Default to %d for int[], int, or other/unknown element types
                     format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, FunctionCallNode):
@@ -262,10 +306,12 @@ class Compiler:
                     format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, (MethodCallNode, BinaryOpNode, ThisNode)):
-                # Assume these currently produce integer results or types handled by %d
-                # Future: MethodCallNode would need return type lookup for %s/%d choice
-                # ThisNode currently resolves to an address (pointer), printing as %d is okay for now.
-                format_string_parts.append("%d") 
+                # Check the expression type using our method
+                node_type_for_print = self.get_expr_type(expr, context)
+                if node_type_for_print == 'string':
+                     format_string_parts.append("%s")
+                else:
+                    format_string_parts.append("%d") 
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, MacroInvokeNode):
                 # For macro invocations, we'll assume they'll resolve to integers for now
@@ -345,20 +391,22 @@ class Compiler:
         var_name = node.name
         # The stack space and offset for this variable should have been pre-calculated 
         # and stored in self.current_method_locals by visit_MethodNode.
+        # The type string (e.g., "int", "int[]") is in local_info['type']
         if var_name not in self.current_method_locals:
             raise CompilerError(f"Internal Compiler Error: Local variable '{var_name}' was not pre-allocated space. L{node.lineno}")
 
         local_info = self.current_method_locals[var_name]
         var_offset_rbp = local_info['offset_rbp']
+        var_type_str = local_info['type'] # e.g., "int", "int[]"
 
-        decl_assembly = f"  # Variable Declaration: {var_name} ({node.type}) at L{node.lineno}\n"
+        decl_assembly = f"  # Variable Declaration: {var_name} ({var_type_str}) at L{node.lineno}\n"
         
         # 1. Evaluate the right-hand side expression (initialization value)
+        #    This will handle ListLiteralNode if used for initialization.
         decl_assembly += self.visit(node.expression, context) # Result will be in RAX
         
         # 2. Store the result from RAX into the variable's pre-allocated stack slot
-        #    No need to adjust RSP here, space is already made in prologue.
-        decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX at [rbp{var_offset_rbp}]\n"
+        decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX (pointer for lists) at [rbp{var_offset_rbp}]\n"
         
         self.current_method_locals[var_name]['is_initialized'] = True # Mark as initialized
         return decl_assembly
@@ -495,6 +543,174 @@ class Compiler:
             code += "  mov rdi, rax # exit code\n"
             code += "  call exit\n"
             return code
+        elif node.name == "length":
+            if len(node.arguments) != 1:
+                raise CompilerError(f"length() expects one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
+            code = f"  # length(list) call at L{node.name_token.lineno}\n"
+            code += self.visit(node.arguments[0], context) # List pointer in RAX
+            code += "  mov rdi, rax # List pointer for length check\n"
+            code += "  cmp rdi, 0 # Check for null pointer \n"
+            code += f"  jne .L_length_not_null_{node.name_token.lineno}\n"
+            code += "  mov rax, 0 # Length of null list is 0\n"
+            code += f"  jmp .L_length_end_{node.name_token.lineno}\n"
+            code += f".L_length_not_null_{node.name_token.lineno}:\n"
+            code += "  mov rax, QWORD PTR [rdi + 8] # Load length from list_ptr + 8 bytes offset\n"
+            code += f".L_length_end_{node.name_token.lineno}:\n"
+            return code
+        elif node.name == "append":
+            if len(node.arguments) != 2:
+                raise CompilerError(f"append() expects two arguments (list, value), got {len(node.arguments)} at L{node.name_token.lineno}")
+
+            code = f"  # append(list, value) call at L{node.name_token.lineno}\n"
+            # Evaluate list pointer (arg 0)
+            code += self.visit(node.arguments[0], context) # List pointer in RAX
+            code += "  push rax # Save list_ptr on stack (as it might change due to realloc)\n"
+            # Evaluate value (arg 1)
+            code += self.visit(node.arguments[1], context) # Value in RAX
+            code += "  push rax # Save value on stack\n"
+
+            code += "  # --- APPEND IMPLEMENTATION ---\n"
+            code += "  pop rsi    # Value to append is now in RSI\n"
+            code += "  pop rdi    # List pointer is now in RDI\n"
+
+            # Check if list_ptr (RDI) is null (meaning uninitialized list)
+            null_list_label = f".L_append_null_list_{node.name_token.lineno}"
+            not_null_list_label = f".L_append_not_null_list_{node.name_token.lineno}"
+            code += "  cmp rdi, 0\n"
+            code += f"  je {null_list_label}\n"
+
+            # List is not null, proceed with normal append logic
+            code += f"{not_null_list_label}:\n"
+            code += "  mov r12, QWORD PTR [rdi]     # r12 = capacity = list_ptr[0]\n"
+            code += "  mov r13, QWORD PTR [rdi + 8] # r13 = length   = list_ptr[1]\n"
+            code += "  cmp r13, r12                 # if length >= capacity\n"
+            code += f"  jl .L_append_has_space_{node.name_token.lineno}\n"
+
+            code += "  # No space, reallocate\n"
+            code += "  mov rax, r12                 # current capacity in RAX\n"
+            code += "  test rax, rax                # Check if capacity is 0\n"
+            code += f"  jnz .L_append_double_cap_{node.name_token.lineno}\n"
+            code += "  mov r12, 8                   # If capacity was 0, set new capacity to 8 (e.g.)\n"
+            code += f"  jmp .L_append_set_new_cap_{node.name_token.lineno}\n"
+            code += f".L_append_double_cap_{node.name_token.lineno}:\n"
+            code += "  shl r12, 1                   # new_capacity = capacity * 2\n"
+            code += f".L_append_set_new_cap_{node.name_token.lineno}:\n"
+            # r12 now holds new_capacity
+
+            code += "  push rsi                     # Save value (RSI) before realloc\n"
+            code += "  mov rsi, r12                 # rsi = new_capacity (for element storage)\n"
+            code += "  imul rsi, 8                  # rsi = new_capacity * 8 (bytes for elements)\n"
+            code += "  add rsi, 16                  # rsi = total new size (header + elements)\n"
+            # RDI still holds old list_ptr for realloc
+            code += "  call realloc                 # rax = realloc(old_list_ptr, total_new_size)\n"
+            code += "  pop rsi                      # Restore value (RSI)\n"
+            code += "  mov rdi, rax                 # Update list_ptr with realloc result\n"
+            code += "  mov QWORD PTR [rdi], r12     # list_ptr[0] = new_capacity\n"
+            # R13 (length) is still correct
+
+            code += f".L_append_has_space_{node.name_token.lineno}:\n"
+            code += "  mov rax, r13                 # RAX = current length (index to insert at)\n"
+            code += "  imul rax, 8                  # offset for element = length * 8\n"
+            code += "  add rax, 16                  # total offset = header_size + element_offset\n"
+            code += "  mov QWORD PTR [rdi + rax], rsi # list_ptr[length_offset] = value\n"
+            code += "  inc r13                      # length++\n"
+            code += "  mov QWORD PTR [rdi + 8], r13 # list_ptr[1] = new_length\n"
+            # Update the original variable holding the list pointer if it changed
+            # The list pointer (RDI) might have changed. We pushed the *original* list_ptr variable's stack address earlier.
+            # No, we pushed the value of the list_ptr itself. The caller must handle if the list_ptr var needs update
+            # For `append(myList, x)`, if myList is a stack variable, its value (the pointer) needs to be updated
+            # This is tricky. For now, append will modify the list in place. If realloc moves it,
+            # the original pointer variable on stack becomes stale.
+            # A common C pattern is `myList = append(myList, x);` where append returns the new list_ptr.
+            # Let's make append return the (potentially new) list pointer in RAX.
+
+            # The list pointer that was on the stack at [rbp + offset] needs to be updated with the new RDI
+            # This requires knowing which variable it was.
+            # Let's assume for now that the user handles `myList = append(myList, x)` if using this low-level append.
+            # For `append(myList, x)` as a statement, the original `myList` variable on stack needs update if realloc happens.
+
+            # Simplification: append() will return the (potentially new) list_ptr in RAX
+            code += "  mov rax, rdi                 # Return new list_ptr in RAX\n"
+            code += f"  jmp .L_append_end_{node.name_token.lineno}\n"
+
+            # Handle null list case: allocate initial list
+            code += f"{null_list_label}:\n"
+            code += "  mov r12, 8                   # Initial capacity = 8\n"
+            code += "  mov r13, 0                   # Initial length = 0\n"
+            code += "  push rsi                     # Save value (RSI) before malloc\n"
+            code += "  mov rdi, r12                 # rdi = capacity (for element storage)\n"
+            code += "  imul rdi, 8                  # rdi = capacity * 8 (bytes for elements)\n"
+            code += "  add rdi, 16                  # rdi = total size for malloc (header + elements)\n"
+            code += "  call malloc                  # rax = new_list_ptr\n"
+            code += "  pop rsi                      # Restore value (RSI)\n"
+            code += "  mov rdi, rax                 # list_ptr = new_list_ptr\n"
+            code += "  mov QWORD PTR [rdi], r12     # list_ptr[0] = capacity\n"
+            code += "  mov QWORD PTR [rdi + 8], r13 # list_ptr[1] = length (still 0)\n"
+            # Now jump to the part that adds the element (which expects length in r13)
+            code += f"  jmp .L_append_has_space_{node.name_token.lineno} # This will add the first element\n"
+
+            code += f".L_append_end_{node.name_token.lineno}:\n"
+            # Result (new list pointer) is in RAX.
+            # The caller who has the list variable (e.g. `myList`) must update it with RAX.
+            # If `append` is used as a statement, `myList = append(myList, val)` is implied.
+            # For `var myList = ...; append(myList, val);`, we need to find `myList` on stack and update.
+            # This is complex. Let's assume `append` returns the new pointer and the user assigns it.
+            # If called as `append(list,val)` as a statement, the original variable is NOT updated by this code.
+            return code
+
+        elif node.name == "pop":
+            if len(node.arguments) != 1:
+                raise CompilerError(f"pop() expects exactly one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
+            
+            code = f"  # pop(list) call at L{node.name_token.lineno}\n"
+            # Evaluate list pointer
+            code += self.visit(node.arguments[0], context) # List pointer in RAX
+            code += "  mov rdi, rax # List pointer for pop operation\n"
+            
+            # Check for null list
+            code += "  cmp rdi, 0 # Check for null list pointer\n"
+            code += f"  jne .L_pop_not_null_{node.name_token.lineno}\n"
+            
+            # Handle null list error
+            error_msg = self.new_string_label("Error: Cannot pop from a null list.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            code += f".L_pop_not_null_{node.name_token.lineno}:\n"
+            
+            # Check if list is empty
+            code += "  mov r12, QWORD PTR [rdi + 8] # r12 = length\n"
+            code += "  cmp r12, 0 # Check if list is empty\n"
+            code += f"  jne .L_pop_not_empty_{node.name_token.lineno}\n"
+            
+            # Handle empty list error
+            error_msg = self.new_string_label("Error: Cannot pop from an empty list.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            code += f".L_pop_not_empty_{node.name_token.lineno}:\n"
+            
+            # Get last element's value
+            code += "  dec r12 # r12 = length - 1 (last element index)\n"
+            code += "  imul r13, r12, 8 # r13 = (length-1) * 8 (byte offset)\n"
+            code += "  add r13, 16 # r13 = header_size + element_offset\n"
+            code += "  mov rax, QWORD PTR [rdi + r13] # rax = list[length-1]\n"
+            
+            # Save return value temporarily
+            code += "  push rax # Save the value to be returned\n"
+            
+            # Update length
+            code += "  mov QWORD PTR [rdi + 8], r12 # Update length = length - 1\n"
+            
+            # Restore return value
+            code += "  pop rax # Restore the popped value to return\n"
+            
+            return code
+
         elif node.name == "open":
             # open(filename, mode) - Opens a file and returns a file pointer
             if len(node.arguments) != 2:
@@ -910,7 +1126,41 @@ class Compiler:
                 return "int"
             elif func_name == "read":
                 return "string"
+        elif isinstance(node, ArrayAccessNode):
+            # Added support for array access type detection
+            element_type = self.get_array_element_type(node.array_expr, context)
+            return element_type
         # Default for unknown/unhandled expressions
+        return "unknown"
+
+    def get_array_element_type(self, array_expr, context):
+        """
+        Helper method to determine the element type of an array.
+        Returns the base type (e.g., "int", "string") without the "[]" suffix.
+        """
+        if isinstance(array_expr, IdentifierNode):
+            var_name = array_expr.value
+            var_type = None
+            
+            # Check local variables first, then parameters
+            if var_name in self.current_method_locals:
+                var_type = self.current_method_locals[var_name]['type']
+            elif var_name in self.current_method_params:
+                var_type = self.current_method_params[var_name]['type']
+                
+            if var_type and var_type.endswith("[]"):
+                # Return the base type without the "[]" suffix
+                return var_type[:-2]
+        
+        # For nested arrays (like matrix[i][j]) or complex expressions
+        # When evaluating something like matrix[i], which returns a list pointer
+        elif isinstance(array_expr, ArrayAccessNode):
+            # Recursively get the element type of the parent array
+            parent_type = self.get_array_element_type(array_expr.array_expr, context)
+            if parent_type and parent_type.endswith("[]"):
+                return parent_type[:-2]
+        
+        # Default to "unknown" if we can't determine the type
         return "unknown"
 
     def visit_IfNode(self, node: IfNode, context):
@@ -1006,20 +1256,58 @@ class Compiler:
         return f"  jmp {end_label} # stop\n"
 
     def visit_AssignmentNode(self, node: AssignmentNode, context):
-        # Assignment statement: variable = expression
-        code = f"  # Assignment to {node.name} at L{node.lineno}\n"
-        # Evaluate RHS
+        # Assignment statement: variable = expression  OR list[index] = expression
+        code = f"  # Assignment to {node.name_token.value if isinstance(node.name_token, Token) else 'list element'} at L{node.lineno}\n"
+        
+        # Evaluate RHS first, result in RAX
         code += self.visit(node.expression, context)
-        # Determine variable location
-        var_name = node.name
-        if var_name in self.current_method_locals:
-            offset = self.current_method_locals[var_name]['offset_rbp']
-        elif var_name in self.current_method_params:
-            offset = self.current_method_params[var_name]['offset_rbp']
+        code += "  push rax # Save RHS value on stack\n"
+
+        # Determine if it's a simple variable assignment or array element assignment
+        if isinstance(node.name_token, Token): # Simple variable assignment: myVar = ...
+            var_name = node.name_token.value # node.name is used in parser, but name_token here
+            if var_name in self.current_method_locals:
+                offset = self.current_method_locals[var_name]['offset_rbp']
+            elif var_name in self.current_method_params:
+                offset = self.current_method_params[var_name]['offset_rbp']
+            else:
+                raise CompilerError(f"Assignment to undefined variable '{var_name}' at L{node.lineno}")
+            
+            code += "  pop rbx    # RHS value into RBX\n"
+            code += f"  mov QWORD PTR [rbp {offset}], rbx # {var_name} = RBX\n"
+        
+        elif isinstance(node.name_token, ArrayAccessNode): # Array element assignment: myList[idx] = ...
+            array_access_node = node.name_token # This was misnamed 'name' in AST, should be 'target' or 'lvalue'
+                                                 # For now, assume node.name_token is the ArrayAccessNode from parser
+            
+            # 1. Evaluate array expression (list_ptr)
+            code += self.visit(array_access_node.array_expr, context) # list_ptr in RAX
+            code += "  push rax # Save list_ptr\n"
+            
+            # 2. Evaluate index expression
+            code += self.visit(array_access_node.index_expr, context) # index in RAX
+            code += "  mov rbx, rax # Index in RBX\n"
+            
+            code += "  pop rax    # list_ptr back in RAX\n"
+            code += "  pop rcx    # RHS value in RCX (from first push rax)\n"
+
+            # Bounds check (optional, good practice)
+            # code += "  mov rdx, QWORD PTR [rax + 8] # Get length from list_ptr\n"
+            # code += "  cmp rbx, rdx                 # Compare index with length\n"
+            # code += "  jl .L_assign_index_in_bounds_{node.lineno} \\n"
+            # code += "  # Handle index out of bounds error here (e.g., print error and exit)\\n"
+            # code += f".L_assign_index_in_bounds_{node.lineno}:\\n"
+
+            # Calculate address: list_ptr + 16 (header) + (index * 8)
+            code += "  imul rbx, 8                  # index_offset = index * 8\n"
+            code += "  add rbx, 16                  # total_offset = header_size + index_offset\n"
+            code += "  add rax, rbx                 # target_address = list_ptr + total_offset\n"
+            
+            # Store RHS value (RCX) into the calculated address
+            code += "  mov QWORD PTR [rax], rcx     # list_ptr[index] = RHS_value\n"
         else:
-            raise CompilerError(f"Assignment to undefined variable '{var_name}' at L{node.lineno}")
-        # Store result
-        code += f"  mov QWORD PTR [rbp {offset}], rax # {var_name} = RAX\n"
+            raise CompilerError(f"Invalid LHS for assignment at L{node.lineno}")
+            
         return code
 
     def visit_MacroDefNode(self, node: MacroDefNode, context=None):
@@ -1134,6 +1422,105 @@ class Compiler:
         # For literals and other expressions, just evaluate the body
         else:
             return self.visit(macro_def.body, context)
+
+    def visit_ListLiteralNode(self, node: ListLiteralNode, context):
+        num_elements = len(node.elements)
+        code = f"  # ListLiteral with {num_elements} elements at L{node.lineno}\n"
+
+        # Initial capacity: max(8, num_elements) for some initial space, or just num_elements if exact fit
+        initial_capacity = max(8, num_elements) 
+        
+        # Allocate memory for list structure: header (16 bytes) + elements
+        total_size = 16 + (initial_capacity * 8) # Assuming 8 bytes per element
+        code += f"  mov rdi, {total_size} # Size for list allocation\n"
+        code += "  call malloc           # list_ptr in RAX\n"
+        code += "  push rax              # Save list_ptr on stack\n"
+
+        # Store capacity and length
+        code += f"  mov QWORD PTR [rax], {initial_capacity} # Store capacity at list_ptr[0]\n"
+        code += f"  mov QWORD PTR [rax+8], {num_elements}   # Store length at list_ptr[8]\n"
+
+        # Store elements
+        element_base_offset = 16 # Start of element data
+        for i, expr_node in enumerate(node.elements):
+            # Check if the element is itself a ListLiteralNode (for nested lists/matrices)
+            if isinstance(expr_node, ListLiteralNode):
+                # For nested list literals, recursively process them
+                code += self.visit(expr_node, context) # This will create the inner list and leave its pointer in RAX
+            else:
+                # Normal element
+                code += self.visit(expr_node, context) # Element value in RAX
+            
+            # Need to get list_ptr from stack to store element
+            code += "  pop rbx               # list_ptr into RBX\n"
+            current_element_offset = element_base_offset + (i * 8)
+            code += f"  mov QWORD PTR [rbx + {current_element_offset}], rax # list_ptr[element_offset] = value\n"
+            code += "  push rbx              # Push list_ptr back on stack\n"
+        
+        code += "  pop rax # Final list_ptr (from last push) into RAX to be the result of this expression\n"
+        return code
+
+    def visit_ArrayAccessNode(self, node: ArrayAccessNode, context):
+        # Add a unique ID generator for array access operations
+        if not hasattr(self, 'array_access_counter'):
+            self.array_access_counter = 0
+        self.array_access_counter += 1
+        unique_id = f"{node.lineno}_{self.array_access_counter}"
+        
+        # Determine the element type for this array access
+        element_type = self.get_array_element_type(node.array_expr, context)
+        
+        code = f"  # ArrayAccessNode: list[index] of type {element_type} at L{node.lineno}\n"
+        
+        # 1. Evaluate array_expr (list_ptr) -> result in RAX
+        code += self.visit(node.array_expr, context)
+        code += "  push rax # Save list_ptr on stack\n"
+        
+        # 2. Evaluate index_expr -> result in RAX
+        code += self.visit(node.index_expr, context)
+        code += "  mov rbx, rax # Index in RBX\n"
+        
+        code += "  pop rax    # list_ptr back in RAX\n"
+
+        # Check for null list pointer
+        code += "  cmp rax, 0 # Check for null pointer \n"
+        code += f"  jne .L_access_not_null_{unique_id}\n"
+        # Handle null pointer access
+        error_msg_null = self.new_string_label("Error: Null pointer access in array operation.\n")
+        code += f"  lea rdi, {error_msg_null}[rip]\n"
+        code += "  call printf\n"
+        code += "  mov rdi, 1\n"
+        code += "  call exit\n"
+        code += f".L_access_not_null_{unique_id}:\n"
+        
+        # Bounds check
+        idx_ok_label = f".L_access_idx_ok_{unique_id}"
+        idx_err_label = f".L_access_idx_err_{unique_id}"
+
+        code += "  mov rcx, QWORD PTR [rax + 8] # length in RCX\n"
+        code += "  cmp rbx, 0                   # if index < 0\n"
+        code += f"  jl {idx_err_label}           # jump to error\n"
+        code += "  cmp rbx, rcx                 # if index >= length\n"
+        code += f"  jge {idx_err_label}          # jump to error\n"
+        code += f"  jmp {idx_ok_label}           # index is OK\n"
+
+        code += f"{idx_err_label}:\n"
+        error_msg_bounds = self.new_string_label("Error: Array index out of bounds.\n")
+        code += f"  lea rdi, {error_msg_bounds}[rip]\n"
+        code += "  call printf\n"
+        code += "  mov rdi, 1\n"
+        code += "  call exit\n"
+        
+        code += f"{idx_ok_label}:\n"
+        # Calculate address: list_ptr + 16 (header) + (index * 8)
+        code += "  imul rbx, 8                  # index_offset = index * 8\n"
+        code += "  add rbx, 16                  # total_offset = header_size + index_offset\n"
+        code += "  add rax, rbx                 # element_address = list_ptr + total_offset\n"
+        
+        # Load value from element_address into RAX
+        code += "  mov rax, QWORD PTR [rax]     # RAX = value at list_ptr[index]\n"
+        
+        return code
 
     def compile(self, node: ProgramNode):
         return self.visit(node)

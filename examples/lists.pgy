@@ -1,0 +1,65 @@
+class Main {
+    def main() -> void {
+        var myintlist int[] = {1, 2, 3} // you can also create string lists like this: {"hello", "world"}
+
+        append(myintlist, 4) // appends 4 to the end of the list, you can also append strings for string lists
+        append(myintlist, 5)
+
+        print(myintlist[3]) // prints 4
+
+        print("Int list: ")
+        this:printlist(myintlist)
+
+        var mystringlist string[] = {"hello", "world"}
+
+        print("--------------------------------")
+        print("String list: ")
+        append(mystringlist, "!")
+
+        this:printlist_str(mystringlist)
+
+        print("Int list (again): ")
+        var popped int = pop(myintlist) // pops the last element of the list and returns it
+        print("Popped int: ", popped)
+        this:printlist(myintlist)
+    
+        print("--------------------------------")
+        print("String list (again): ")
+        var popped_str string = pop(mystringlist) // pops the last element of the list and returns it
+        print("Popped string: ", popped_str)
+
+        this:printlist_str(mystringlist)
+    }
+
+    def printlist(list int[]) -> void {
+        var size int = length(list)
+
+        var i int = 0
+
+        loop {
+            if (i >= size) {
+                stop
+            }
+
+            print(i, ": ", list[i])
+
+            i++
+        }
+    }
+
+    def printlist_str(list string[]) -> void {
+        var size int = length(list)
+
+        var i int = 0
+
+        loop {
+            if (i >= size) {
+                stop
+            }
+
+            print(i, ": ", list[i])
+
+            i++
+        }
+    }
+}

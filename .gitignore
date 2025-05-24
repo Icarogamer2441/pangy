@@ -46,6 +46,8 @@ macros
 macrosinclass
 inputsandtypes
 files
+matrixes
+lists
 
 # Logs
 *.log

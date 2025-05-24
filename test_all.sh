@@ -11,6 +11,8 @@ pangy examples/macros.pgy -o macros
 pangy examples/macrosinclass.pgy -o macrosinclass
 pangy examples/inputsandtypes.pgy -o inputsandtypes
 pangy examples/files.pgy -o files
+pangy examples/lists.pgy -o lists
+pangy examples/matrixes.pgy -o matrixes
 
 echo "Running hello..."
 ./hello
@@ -51,5 +53,11 @@ echo "--------------------------------"
 echo "Running files..."
 ./files
 echo "--------------------------------"
+echo "Running lists..."
+./lists
+echo "--------------------------------"
+echo "Running matrixes..."
+./matrixes
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes

@@ -217,18 +217,104 @@ class Main {
 }
 ```
 
+## Dynamic Lists
+
+Pangy supports dynamic lists (arrays) of integers or strings.
+
+### Declaration and Initialization
+
+Lists are declared with a base type followed by `[]`. They can be initialized with a literal syntax using curly braces `{}`.
+
+```pangy
+class Main {
+    def main() -> void {
+        var myIntList int[] = {10, 20, 30}       // List of integers
+        var myStringList string[] = {"hello", "pangy", "world"} // List of strings
+        var emptyList int[] = {}                // An empty list of integers
+
+        // You can also declare without immediate initialization,
+        // but it will be a null pointer until assigned or appended to.
+        var anotherList int[]
+        // anotherList = {} // Initialize later
+        // append(anotherList, 100) // First append will allocate it
+    }
+}
+```
+
+### Accessing Elements
+
+List elements are accessed using zero-based indexing with square brackets `[]`.
+
+```pangy
+var myList int[] = {5, 10, 15}
+var firstElement int = myList[0]  // firstElement will be 5
+print(myList[1])                 // Prints 10
+
+myList[2] = 20                   // Modifies the element at index 2
+print(myList[2])                 // Prints 20
+```
+Accessing an element with an index out of bounds (less than 0 or greater than or equal to the list length) or on a null list pointer will result in a runtime error and program termination.
+
+### Built-in List Functions
+
+- `length(list_ptr) -> int`
+  Returns the current number of elements in the list.
+  ```pangy
+  var numbers int[] = {1, 2, 3, 4}
+  var len int = length(numbers) // len will be 4
+  print("List length: ", len)
+  ```
+
+- `append(list_ptr, value) -> list_ptr`
+  Appends a `value` to the end of the list. If the list needs to grow, it will be reallocated. 
+  **Important:** `append` returns the (potentially new) pointer to the list. You should assign the result back to your list variable if the list might be reallocated (which can happen if its capacity is exceeded).
+  ```pangy
+  var items int[] = {1}
+  items = append(items, 2) // items is now {1, 2}
+  items = append(items, 3) // items is now {1, 2, 3}
+  print(items[0], items[1], items[2]) // Prints 1 2 3
+
+  var strList string[] = {}
+  strList = append(strList, "a")
+  strList = append(strList, "b")
+  print(length(strList)) // Prints 2
+  ```
+
+### Example Usage
+
+```pangy
+class ListDemo {
+    def main() -> void {
+        var scores int[] = {}
+
+        scores = append(scores, 100)
+        scores = append(scores, 90)
+        scores = append(scores, 95)
+
+        print("Number of scores: ", length(scores)) // Prints 3
+
+        var i int = 0
+        loop {
+            if i >= length(scores) {
+                break
+            }
+            print("Score ", i, ": ", scores[i])
+            i++
+        }
+        // Output:
+        // Score 0 : 100
+        // Score 1 : 90
+        // Score 2 : 95
+
+        scores[1] = 92
+        print("Updated score 1: ", scores[1]) // Prints 92
+    }
+}
+```
+
 ## Example
 
 ```
-class Main {
-    def main() -> void {
-        var name string = input("Enter your name: ")
-        var age int = to_int(input("Enter your age: "))
-        
-        print("Hello, ", name, "! You are ", age, " years old.")
-        print("Age as string: ", to_string(age))
-    }
-}
 
 ## Compilation
 

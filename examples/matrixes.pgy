@@ -1,0 +1,83 @@
+class Main {
+    def main() -> void {
+        var int_matrix int[][] = {
+            {1, 2, 3, 4},
+            {4, 5, 6, 7},
+            {7, 8, 9, 10},
+            {11, 12, 13, 14}
+        }
+
+        append(int_matrix, {15, 16, 17, 18}) // appends a new row to the matrix
+
+        append(int_matrix[0], 19) // appends a new element to the first row
+
+        this:print_matrix(int_matrix)
+
+        var string_matrix string[][] = {
+            {"hello", "world"},
+            {"this", "is a test"}
+        }
+
+        append(string_matrix, {"hello", "world"}) // appends a new row to the matrix
+
+        append(string_matrix[2], "!") // appends a new element to the first row
+
+        this:print_matrix_str(string_matrix)
+    }
+
+    def print_matrix(matrix int[][]) -> void {
+        var size int = length(matrix)
+
+        var i int = 0
+
+        loop {
+            if (i >= size) {
+                stop
+            }
+
+            var size_inner int = length(matrix[i])
+
+            var j int = 0
+
+            loop {
+                if (j >= size_inner) {
+                    stop
+                }
+
+                print(i, ", ", j, ": ", matrix[i][j])
+
+                j++
+            }
+
+            i++
+        }
+    }
+
+    def print_matrix_str(matrix string[][]) -> void {
+        var size int = length(matrix)
+
+        var i int = 0
+
+        loop {
+            if (i >= size) {
+                stop
+            }
+
+            var size_inner int = length(matrix[i])
+
+            var j int = 0
+
+            loop {
+                if (j >= size_inner) {
+                    stop
+                }
+
+                print(i, ", ", j, ": ", matrix[i][j])
+
+                j++
+            }
+
+            i++
+        }
+    }
+}

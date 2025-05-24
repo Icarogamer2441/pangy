@@ -53,6 +53,10 @@ TT_INCLUDE = 'INCLUDE' # For include "path" directives
 TT_LOOP = 'LOOP' # For loop keyword
 TT_STOP = 'STOP' # For stop keyword
 
+# Tokens for list support
+TT_LBRACKET = 'LBRACKET' # For '['
+TT_RBRACKET = 'RBRACKET' # For ']'
+
 class Token:
     def __init__(self, type, value, lineno=0, colno=0):
         self.type = type
@@ -305,6 +309,16 @@ class Lexer:
             #    self.advance()
             #    return token
 
+            if self.current_char == '[': # Added for list type open bracket
+                token = Token(TT_LBRACKET, '[', self.lineno, start_col)
+                self.advance()
+                return token
+
+            if self.current_char == ']': # Added for list type close bracket
+                token = Token(TT_RBRACKET, ']', self.lineno, start_col)
+                self.advance()
+                return token
+            
             raise Exception(f"LexerError: Unexpected character '{self.current_char}' at L{self.lineno}:C{self.colno}")
 
         return Token(TT_EOF, None, self.lineno, self.colno)
@@ -354,8 +368,8 @@ class ParamNode(ASTNode):
     def __init__(self, name_token, type_token):
         self.name = name_token.value
         self.name_token = name_token
-        self.type = type_token.value
-        self.type_token = type_token
+        self.type = type_token.value # This will become a string like "int" or "int[]"
+        self.type_token = type_token # May need adjustment if type_token is synthetic for arrays
 
     def __repr__(self):
         return f"ParamNode(name='{self.name}', type='{self.type}')"
@@ -365,8 +379,8 @@ class MethodNode(ASTNode):
         self.name = name_token.value
         self.name_token = name_token
         self.params = params # List of ParamNode
-        self.return_type = return_type_token.value
-        self.return_type_token = return_type_token
+        self.return_type = return_type_token.value # This will become a string
+        self.return_type_token = return_type_token # May need adjustment
         self.body = body # BlockNode
         self.is_static = is_static
 
@@ -488,8 +502,8 @@ class VarDeclNode(ASTNode): # Statement Node
     def __init__(self, name_token, type_token, expr_node, lineno):
         self.name = name_token.value
         self.name_token = name_token
-        self.type = type_token.value
-        self.type_token = type_token
+        self.type = type_token.value # This will become a string
+        self.type_token = type_token # May need adjustment
         self.expression = expr_node # The expression to initialize the variable
         self.lineno = lineno
 
@@ -545,6 +559,26 @@ class MacroInvokeNode(ExprNode):
     def __repr__(self):
         object_str = f"{self.object_expr}:" if self.object_expr else ""
         return f"MacroInvokeNode(name='{object_str}@{self.name}', args={self.arguments}, L{self.lineno})"
+
+# List-related AST nodes
+class ListLiteralNode(ExprNode):
+    def __init__(self, elements, lbrace_token):
+        self.elements = elements # List of ExprNode
+        self.lbrace_token = lbrace_token
+        self.lineno = lbrace_token.lineno
+
+    def __repr__(self):
+        return f"ListLiteralNode(elements={self.elements}, L{self.lineno})"
+
+class ArrayAccessNode(ExprNode):
+    def __init__(self, array_expr, index_expr, lbracket_token):
+        self.array_expr = array_expr
+        self.index_expr = index_expr
+        self.lbracket_token = lbracket_token
+        self.lineno = lbracket_token.lineno
+
+    def __repr__(self):
+        return f"ArrayAccessNode(array={self.array_expr}, index={self.index_expr}, L{self.lineno})"
 
 # Parser
 class Parser:
@@ -701,36 +735,18 @@ class Parser:
         if self.current_token.type == TT_IDENTIFIER:
             # Parameter name
             name_token = self.consume(TT_IDENTIFIER)
-            # Parameter type (primitive or class)
-            if self.current_token.type in (TT_TYPE, TT_IDENTIFIER):
-                base_token = self.consume(self.current_token.type)
-                composite_type = base_token.value
-                # Handle qualified class names
-                while self.current_token.type == TT_DOT:
-                    self.consume(TT_DOT)
-                    next_id_token = self.consume(TT_IDENTIFIER)
-                    composite_type += f".{next_id_token.value}"
-                type_token = Token(base_token.type, composite_type, base_token.lineno, base_token.colno)
-            else:
-                tok = self.current_token
-                raise Exception(f"ParserError: Expected TYPE or IDENTIFIER (for class type) but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
-            params.append(ParamNode(name_token, type_token))
+            # Parameter type
+            type_string = self.parse_type_specifier()
+            # Create a synthetic token for ParamNode for now, or change ParamNode
+            # Let's change ParamNode to accept type_string directly.
+            params.append(ParamNode(name_token, Token(TT_TYPE, type_string, name_token.lineno, name_token.colno))) # Temporary token
+            
             # Additional parameters separated by commas
             while self.current_token.type == TT_COMMA:
                 self.consume(TT_COMMA)
                 name_token = self.consume(TT_IDENTIFIER)
-                if self.current_token.type in (TT_TYPE, TT_IDENTIFIER):
-                    base_token = self.consume(self.current_token.type)
-                    composite_type = base_token.value
-                    while self.current_token.type == TT_DOT:
-                        self.consume(TT_DOT)
-                        next_id_token = self.consume(TT_IDENTIFIER)
-                        composite_type += f".{next_id_token.value}"
-                    type_token = Token(base_token.type, composite_type, base_token.lineno, base_token.colno)
-                else:
-                    tok = self.current_token
-                    raise Exception(f"ParserError: Expected TYPE or IDENTIFIER (for class type) but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
-                params.append(ParamNode(name_token, type_token))
+                type_string = self.parse_type_specifier()
+                params.append(ParamNode(name_token, Token(TT_TYPE, type_string, name_token.lineno, name_token.colno))) # Temporary token
         return params
 
     def parse_method_definition(self):
@@ -751,18 +767,15 @@ class Parser:
         self.consume(TT_RPAREN)
         # Return type (primitive or class)
         self.consume(TT_ARROW)
-        if self.current_token.type in (TT_TYPE, TT_IDENTIFIER):
-            base_token = self.consume(self.current_token.type)
-            composite_type = base_token.value
-            # Handle qualified class names
-            while self.current_token.type == TT_DOT:
-                self.consume(TT_DOT)
-                next_id_token = self.consume(TT_IDENTIFIER)
-                composite_type += f".{next_id_token.value}"
-            return_type_token = Token(base_token.type, composite_type, base_token.lineno, base_token.colno)
-        else:
-            tok = self.current_token
-            raise Exception(f"ParserError: Expected TYPE or IDENTIFIER (for return type) but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
+        
+        # Use parse_type_specifier for return type
+        return_type_string = self.parse_type_specifier()
+        # Create a synthetic token for MethodNode. 
+        # Using name_token's line for the synthetic type token is an approximation for lineno.
+        # The column number might not be perfectly accurate for complex types.
+        # However, the MethodNode's `return_type` field (string) will be accurate.
+        return_type_token = Token(TT_TYPE, return_type_string, name_token.lineno, name_token.colno) # Synthetic token
+        
         body = self.parse_block()
 
         return MethodNode(name_token, params, return_type_token, body, is_static)
@@ -836,19 +849,11 @@ class Parser:
         self.consume(TT_VAR)
         name_token = self.consume(TT_IDENTIFIER)
 
-        # Parse base type (predefined or class), then allow nested qualifiers
-        if self.current_token.type in (TT_TYPE, TT_IDENTIFIER):
-            base_token = self.consume(self.current_token.type)
-            composite_type = base_token.value
-            while self.current_token.type == TT_DOT:
-                self.consume(TT_DOT)
-                next_id_token = self.consume(TT_IDENTIFIER)
-                composite_type += f".{next_id_token.value}"
-            # Create synthetic type token for composite type
-            type_token = Token(base_token.type, composite_type, base_token.lineno, base_token.colno)
-        else:
-            tok = self.current_token
-            raise Exception(f"ParserError: Expected TYPE or IDENTIFIER (for class type) but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
+        # Parse type using the new helper
+        type_string = self.parse_type_specifier()
+        # Create a synthetic token for VarDeclNode for now, or change VarDeclNode
+        # Let's change VarDeclNode to accept type_string.
+        type_token = Token(TT_TYPE, type_string, name_token.lineno, name_token.colno) # Temporary token
 
         expr_node = None
         if self.current_token.type == TT_ASSIGN:
@@ -928,10 +933,10 @@ class Parser:
         return node
 
     def parse_term(self):
-        # term ::= primary ( ( "." | ":" ) IDENTIFIER "(" arguments? ")" | "++" | "--" | "(" arguments ")" )* 
+        # term ::= primary ( ( "." | ":" ) IDENTIFIER "(" arguments? ")" | "++" | "--" | "(" arguments ")" | "[" expression "]" )* 
         node = self.parse_primary()
 
-        while self.current_token.type in (TT_DOT, TT_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN, TT_AT):
+        while self.current_token.type in (TT_DOT, TT_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN, TT_AT, TT_LBRACKET):
             # Handle postfix increment/decrement
             if self.current_token.type in (TT_PLUSPLUS, TT_MINUSMINUS):
                 op_token = self.current_token
@@ -1026,6 +1031,14 @@ class Parser:
                 node = MacroInvokeNode(macro_name_token, args, macro_name_token.lineno)
                 continue
                 
+            # Handle array access like list[index]
+            if self.current_token.type == TT_LBRACKET:
+                lbracket_token = self.consume(TT_LBRACKET)
+                index_expr = self.parse_expression()
+                self.consume(TT_RBRACKET)
+                node = ArrayAccessNode(node, index_expr, lbracket_token)
+                continue
+
             break
         
         return node
@@ -1049,6 +1062,8 @@ class Parser:
             node = self.parse_expression()
             self.consume(TT_RPAREN)
             return node
+        elif token.type == TT_LBRACE: # For list literals like {1, 2, 3}
+            return self.parse_list_literal()
         elif token.type == TT_AT:
             # Direct macro invocation: @name(args)
             self.consume(TT_AT)
@@ -1061,6 +1076,52 @@ class Parser:
             return MacroInvokeNode(macro_name_token, args, macro_name_token.lineno)
         else:
             raise Exception(f"ParserError: Unexpected token {token.type} ('{token.value}') for expression at L{token.lineno}:C{token.colno}")
+
+    def parse_list_literal(self):
+        # list_literal ::= "{" (expression ("," expression)*)? "}"
+        lbrace_token = self.consume(TT_LBRACE)
+        elements = []
+        if self.current_token.type != TT_RBRACE:
+            elements.append(self.parse_expression())
+            while self.current_token.type == TT_COMMA:
+                self.consume(TT_COMMA)
+                elements.append(self.parse_expression())
+        self.consume(TT_RBRACE)
+        return ListLiteralNode(elements, lbrace_token)
+
+    def parse_type_specifier(self):
+        # Parses type names like "int", "string", "MyClass", and "int[]", "MyClass[]"
+        # Returns a string representing the full type.
+        # Corrected logic:
+        # type_specifier ::= base_type ( "[" "]" )?
+        # base_type ::= TYPE | IDENTIFIER ("." IDENTIFIER)*
+        
+        type_str_parts = []
+        # Keep track of the starting token for lineno/colno if needed for a synthetic token,
+        # though the primary return is the type_str.
+        # base_type_start_token = self.current_token 
+
+        if self.current_token.type == TT_TYPE:
+            type_token = self.consume(TT_TYPE)
+            type_str_parts.append(type_token.value)
+        elif self.current_token.type == TT_IDENTIFIER:
+            type_str_parts.append(self.consume(TT_IDENTIFIER).value)
+            while self.current_token.type == TT_DOT:
+                self.consume(TT_DOT)
+                type_str_parts.append(self.consume(TT_IDENTIFIER).value)
+        else:
+            tok = self.current_token
+            raise Exception(f"ParserError: Expected TYPE or IDENTIFIER for base type, but got {tok.type} ('{tok.value}') at L{tok.lineno}:C{tok.colno}")
+        
+        type_str = ".".join(type_str_parts)
+
+        # Allow for multiple array dimensions like int[][] or string[][][]
+        while self.current_token.type == TT_LBRACKET:
+            self.consume(TT_LBRACKET)
+            self.consume(TT_RBRACKET)
+            type_str += "[]"
+        
+        return type_str
 
     def parse(self):
         if not self.tokens or self.tokens[0].type == TT_EOF and len(self.tokens) == 1:
@@ -1151,5 +1212,4 @@ if __name__ == '__main__':
     # Or, if a function is void, its `return` cannot have an expression.
     # The current parser requires an expression for `return`. This is fine.
     # If main has an implicit return, the compiler handles it.
-    # If a void function has an explicit `return;` then we'd need to support that.
-    # The current funcs.pgy syntax is valid with current parser.
+    # If a void function has an explicit `return;`
