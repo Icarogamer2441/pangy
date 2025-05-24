@@ -1,0 +1,23 @@
+class Main {
+    def main() -> void {
+        var file_name string = input("Enter the name of the file to create: ")
+        var file_content string = input("Enter the content of the file: ")
+        
+        var file_path string = file_name + ".txt"
+        var file_pointer file = open(file_path, "w")
+        
+        write(file_pointer, file_content)
+
+        print("File created successfully!")
+
+        close(file_pointer)
+
+        var file_pointer_read file = open(file_path, "r")
+
+        var file_content_read string = read(file_pointer_read)
+
+        print("File content: ", file_content_read)
+
+        close(file_pointer_read)
+    }
+}

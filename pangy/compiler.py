@@ -22,7 +22,7 @@ class Compiler:
         self.next_string_label_id = 0
         self.next_printf_format_label_id = 0
         self.next_if_label_id = 0 # For if/else labels
-        self.externs = ["printf", "exit"] # Standard externs
+        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets"] # Added file operation externs
         
         self.current_method_params = {}
         self.current_method_locals = {} # For local variables
@@ -224,7 +224,7 @@ class Compiler:
         format_string_parts = []
         arg_expr_nodes = [] # For expressions that are not string literals themselves
 
-        for expr in node.expressions:
+        for i, expr in enumerate(node.expressions):
             if isinstance(expr, StringLiteralNode):
                 format_string_parts.append(expr.value.replace("%", "%%"))
             elif isinstance(expr, IntegerLiteralNode):
@@ -241,7 +241,24 @@ class Compiler:
                 
                 if var_type == 'string':
                     format_string_parts.append("%s")
+                elif var_type == 'file':
+                    # For file pointers, print as pointer value
+                    format_string_parts.append("FILE*@%p")
                 else: # Default to %d for int or unknown/other types for now
+                    format_string_parts.append("%d")
+                arg_expr_nodes.append(expr)
+            elif isinstance(expr, FunctionCallNode):
+                # Determine the function return type to use %s or %d
+                func_name = expr.name
+                if func_name == "input":  # input() returns string
+                    format_string_parts.append("%s")
+                elif func_name == "to_int":  # to_int() returns int
+                    format_string_parts.append("%d")
+                elif func_name == "to_string":  # to_string() returns string
+                    format_string_parts.append("%s")
+                elif func_name == "open":  # open() returns file
+                    format_string_parts.append("FILE*@%p")
+                else:  # Default to %d for unknown functions
                     format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
             elif isinstance(expr, (MethodCallNode, BinaryOpNode, ThisNode)):
@@ -271,7 +288,8 @@ class Compiler:
             target_reg = printf_arg_regs[i+1]
             print_assembly += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
         print_assembly += f"  lea {printf_arg_regs[0]}, {format_label}[rip] # Format string for printf\n"
-        print_assembly += "  mov rax, 0 # Num SSE registers for variadic call\n  call printf\n"
+        print_assembly += "  mov rax, 0 # Num SSE registers for variadic call\n"
+        print_assembly += "  call printf\n"
         if num_val_args > (len(printf_arg_regs) -1):
             bytes_pushed = (num_val_args - (len(printf_arg_regs) -1)) * 8
             print_assembly += f"  add rsp, {bytes_pushed} # Clean up printf stack arguments\n"
@@ -477,6 +495,267 @@ class Compiler:
             code += "  mov rdi, rax # exit code\n"
             code += "  call exit\n"
             return code
+        elif node.name == "open":
+            # open(filename, mode) - Opens a file and returns a file pointer
+            if len(node.arguments) != 2:
+                raise CompilerError(f"open() expects exactly two arguments (filename, mode), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # open() call at L{node.name_token.lineno}\n"
+            
+            # Get the filename in RDI (first arg to fopen)
+            code += self.visit(node.arguments[0], context)
+            code += "  mov rdi, rax # Filename (1st fopen arg)\n"
+            
+            # Get the mode in RSI (second arg to fopen)
+            code += self.visit(node.arguments[1], context)
+            code += "  mov rsi, rax # Mode (2nd fopen arg)\n"
+            
+            # Call fopen
+            code += "  call fopen # Open file\n"
+            
+            # Result file pointer is in RAX
+            
+            # Check for NULL return (error)
+            code += "  test rax, rax # Check if file was opened successfully\n"
+            code += "  jnz .Lopen_success_{0}\n".format(node.name_token.lineno)
+            
+            # Handle error without any complicated stack manipulations
+            err_msg = "Error: Failed to open file\n"
+            err_label = self.new_string_label(err_msg)
+            code += f"  lea rdi, {err_label}[rip] # Error message\n"
+            code += "  call printf # Print error message\n"
+            code += "  mov rdi, 1 # Exit code 1 for error\n"
+            code += "  call exit # Exit program\n"
+            
+            code += ".Lopen_success_{0}:\n".format(node.name_token.lineno)
+            
+            # Result is in RAX (the FILE* pointer)
+            return code
+            
+        elif node.name == "close":
+            # close(file_pointer) - Closes a file
+            if len(node.arguments) != 1:
+                raise CompilerError(f"close() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # close() call at L{node.name_token.lineno}\n"
+            
+            # Get file pointer in RDI (arg to fclose)
+            code += self.visit(node.arguments[0], context)
+            code += "  mov rdi, rax # File pointer for fclose\n"
+            
+            # Call fclose
+            code += "  call fclose # Close file\n"
+            
+            # Result (success/failure) is in RAX
+            return code
+            
+        elif node.name == "write":
+            # write(file_pointer, content) - Writes content to a file
+            if len(node.arguments) != 2:
+                raise CompilerError(f"write() expects exactly two arguments (file pointer, content), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # write() call at L{node.name_token.lineno}\n"
+            
+            # Get file pointer in RCX (4th arg to fwrite)
+            code += self.visit(node.arguments[0], context)
+            code += "  mov r12, rax # Save file pointer in R12\n"
+            
+            # Get content in RSI (2nd arg to fwrite)
+            code += self.visit(node.arguments[1], context)
+            code += "  mov r13, rax # Save content pointer in R13\n"
+            
+            # Get string length using strlen
+            code += "  mov rdi, rax # Content for strlen\n"
+            if "strlen" not in self.externs:
+                self.externs.append("strlen")
+            code += "  call strlen # Get string length\n"
+            
+            # Set up arguments for fwrite: fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
+            code += "  mov rdi, r13 # Content pointer (1st arg)\n"
+            code += "  mov rsi, 1   # Size of elements (2nd arg)\n"
+            code += "  mov rdx, rax # Count (3rd arg) - string length\n"
+            code += "  mov rcx, r12 # File pointer (4th arg)\n"
+            
+            # Call fwrite
+            code += "  call fwrite # Write to file\n"
+            
+            # Result is in RAX (number of items written)
+            return code
+            
+        elif node.name == "read":
+            # read(file_pointer) - Reads entire file content into a string
+            if len(node.arguments) != 1:
+                raise CompilerError(f"read() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # read() call at L{node.name_token.lineno}\n"
+            
+            # Get file pointer
+            code += self.visit(node.arguments[0], context)
+            code += "  mov r12, rax # Save file pointer in R12\n"
+            
+            # Move to end of file to get file size
+            if "fseek" not in self.externs:
+                self.externs.append("fseek")
+            code += "  mov rdi, r12 # File pointer\n"
+            code += "  mov rsi, 0   # Offset\n"
+            code += "  mov rdx, 2   # SEEK_END (2)\n"
+            code += "  call fseek   # Seek to end\n"
+            
+            # Get file size with ftell
+            if "ftell" not in self.externs:
+                self.externs.append("ftell")
+            code += "  mov rdi, r12 # File pointer\n"
+            code += "  call ftell   # Get file size\n"
+            code += "  mov r13, rax # Save file size in R13\n"
+            
+            # Rewind to beginning of file
+            code += "  mov rdi, r12 # File pointer\n"
+            code += "  mov rsi, 0   # Offset\n"
+            code += "  mov rdx, 0   # SEEK_SET (0)\n"
+            code += "  call fseek   # Rewind file\n"
+            
+            # Allocate buffer (file size + 1 for null terminator)
+            code += "  lea rdi, [r13 + 1] # Buffer size = file size + 1\n"
+            code += "  call malloc # Allocate buffer\n"
+            code += "  mov r14, rax # Save buffer pointer in R14\n"
+            
+            # Read entire file with fread(buffer, 1, size, file)
+            if "fread" not in self.externs:
+                self.externs.append("fread")
+            code += "  mov rdi, r14 # Buffer\n"
+            code += "  mov rsi, 1   # Size of each element\n"
+            code += "  mov rdx, r13 # Number of elements (file size)\n"
+            code += "  mov rcx, r12 # File pointer\n"
+            code += "  call fread   # Read file\n"
+            
+            # Add null terminator
+            code += "  mov byte ptr [r14 + r13], 0 # Add null terminator\n"
+            
+            # Return buffer
+            code += "  mov rax, r14 # Return buffer pointer\n"
+            
+            return code
+
+        elif node.name == "input":
+            # input() function - prompts the user and returns a string
+            if len(node.arguments) != 1:
+                raise CompilerError(f"input() expects exactly one argument (prompt string), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # input() call at L{node.name_token.lineno}\n"
+            
+            # First, print the prompt using printf
+            prompt_expr = node.arguments[0]
+            code += self.visit(prompt_expr, context)  # Get prompt string in RAX
+            code += "  mov rdi, rax # Prompt string for printf\n"
+            code += "  mov rax, 0 # No SSE registers for variadic call\n"
+            code += "  call printf # Print the prompt\n"
+            
+            # Flush stdout to ensure prompt is displayed before input
+            code += "  mov rdi, 0 # flush stdout\n"
+            code += "  call fflush\n"
+            
+            # Add fflush to externs if not already there
+            if "fflush" not in self.externs:
+                self.externs.append("fflush")
+            
+            # Allocate buffer for input on heap (256 bytes)
+            buffer_size = 256
+            code += f"  mov rdi, {buffer_size} # Size for input buffer malloc\n"
+            code += "  call malloc # Allocate buffer for input\n"
+            
+            # Use fgets for safer input
+            if "fgets" not in self.externs:
+                self.externs.append("fgets")
+            if "stdin" not in self.externs:
+                self.externs.append("stdin")
+            
+            # Setup fgets arguments: fgets(buffer, size, stdin)
+            code += "  mov rdi, rax # Buffer for fgets (1st arg)\n"
+            code += f"  mov rsi, {buffer_size} # Size parameter (2nd arg)\n"
+            code += "  mov rdx, stdin # stdin FILE* (3rd arg)\n"
+            code += "  push rdi # Save buffer pointer\n"
+            code += "  call fgets # Read line into buffer\n"
+            code += "  pop rax # Restore buffer pointer to RAX\n"
+            
+            # Remove trailing newline if present
+            label_end = f".L_input_end_{node.name_token.lineno}"
+            code += "  push rax # Save buffer pointer\n"
+            code += "  mov rdi, rax # Buffer for strlen\n"
+            
+            # Add strlen to externs if not already there
+            if "strlen" not in self.externs:
+                self.externs.append("strlen")
+                
+            code += "  call strlen # Get string length\n"
+            code += "  pop rdi # Restore buffer pointer to RDI\n"
+            code += "  test rax, rax # Check if length is 0\n"
+            code += f"  jz {label_end} # Skip if empty string\n"
+            code += "  lea rcx, [rdi + rax - 1] # Pointer to last char\n"
+            code += "  cmp byte ptr [rcx], 10 # Check if it's newline ('\\n')\n"
+            code += f"  jne {label_end} # Skip if not newline\n"
+            code += "  mov byte ptr [rcx], 0 # Replace newline with null terminator\n"
+            code += f"{label_end}:\n"
+            code += "  mov rax, rdi # Return buffer pointer in RAX\n"
+            
+            return code
+
+        elif node.name == "to_int":
+            # to_int() function - converts a string to integer
+            if len(node.arguments) != 1:
+                raise CompilerError(f"to_int() expects exactly one argument (string), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # to_int() call at L{node.name_token.lineno}\n"
+            
+            # Get the string in RAX
+            code += self.visit(node.arguments[0], context)
+            code += "  test rax, rax # Check if string pointer is null\n"
+            code += "  jnz .Lto_int_valid_ptr_{0}\n".format(node.name_token.lineno)
+            code += "  mov rax, 0 # Return 0 for null string\n"
+            code += "  jmp .Lto_int_done_{0}\n".format(node.name_token.lineno)
+            code += ".Lto_int_valid_ptr_{0}:\n".format(node.name_token.lineno)
+            code += "  mov rdi, rax # String to convert\n"
+            code += "  call atoi # Convert string to integer\n"
+            code += ".Lto_int_done_{0}:\n".format(node.name_token.lineno)
+            # Result is in RAX
+            return code
+
+        elif node.name == "to_string":
+            # to_string() function - converts an integer to string
+            if len(node.arguments) != 1:
+                raise CompilerError(f"to_string() expects exactly one argument (int), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # to_string() call at L{node.name_token.lineno}\n"
+            
+            # Get the integer in RAX
+            code += self.visit(node.arguments[0], context)
+            
+            # Use snprintf to safely convert integer to string
+            if "snprintf" not in self.externs:
+                self.externs.append("snprintf")
+                
+            # Allocate buffer for the result
+            code += "  mov r12, rax # Save the integer value\n"
+            code += "  mov rdi, 24 # Buffer size for 64-bit int\n"
+            code += "  call malloc # Allocate buffer\n"
+            code += "  mov r13, rax # Save buffer pointer\n"
+            
+            # Format string for snprintf
+            format_str = "%d"
+            format_label = self.new_string_label(format_str)
+            
+            # Set up snprintf arguments
+            code += "  mov rdi, rax # Buffer pointer (1st arg)\n"
+            code += "  mov rsi, 24 # Buffer size (2nd arg)\n"
+            code += f"  lea rdx, {format_label}[rip] # Format string (3rd arg)\n"
+            code += "  mov rcx, r12 # Integer to convert (4th arg)\n"
+            code += "  xor rax, rax # Clear RAX for variadic call\n"
+            code += "  call snprintf # Convert int to string\n"
+            
+            # Return the buffer pointer that was saved earlier
+            code += "  mov rax, r13 # Return buffer pointer\n"
+            
+            return code
+
         else:
             # Fallback for other free functions
             explicit_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -497,6 +776,65 @@ class Compiler:
     def visit_BinaryOpNode(self, node: BinaryOpNode, context):
         op_assembly = f"  # BinaryOp: {node.op} (type: {node.op_token.type}) at L{node.op_token.lineno}\n"
         
+        # Check if this is a string concatenation
+        is_string_concat = False
+        if node.op_token.type == TT_PLUS:
+            left_type = self.get_expr_type(node.left, context)
+            right_type = self.get_expr_type(node.right, context)
+            if left_type == "string" or right_type == "string":
+                is_string_concat = True
+        
+        if is_string_concat:
+            # String concatenation
+            op_assembly += self.visit(node.left, context)  # Result in RAX
+            op_assembly += "  push rax # Save left string\n"
+            
+            op_assembly += self.visit(node.right, context) # Result in RAX
+            op_assembly += "  push rax # Save right string\n"
+            
+            # Get length of left string
+            op_assembly += "  mov rdi, QWORD PTR [rsp+8] # Left string\n"
+            # Add strlen to externs if not already there
+            if "strlen" not in self.externs:
+                self.externs.append("strlen")
+            op_assembly += "  call strlen # Get left string length\n"
+            op_assembly += "  mov rbx, rax # Save left length to RBX\n"
+            
+            # Get length of right string
+            op_assembly += "  mov rdi, QWORD PTR [rsp] # Right string\n"
+            op_assembly += "  call strlen # Get right string length\n"
+            
+            # Allocate buffer for concatenated string (left_len + right_len + 1)
+            op_assembly += "  add rax, rbx # Total length\n"
+            op_assembly += "  add rax, 1 # Add space for null terminator\n"
+            op_assembly += "  mov r12, rax # Save total length\n"
+            op_assembly += "  mov rdi, rax # Buffer size\n"
+            op_assembly += "  call malloc # Allocate buffer\n"
+            op_assembly += "  mov r13, rax # Save buffer pointer\n"
+            
+            # Copy left string to buffer
+            op_assembly += "  mov rdi, r13 # Destination buffer\n"
+            op_assembly += "  mov rsi, QWORD PTR [rsp+8] # Source (left string)\n"
+            # Add strcpy to externs if not already there
+            if "strcpy" not in self.externs:
+                self.externs.append("strcpy")
+            op_assembly += "  call strcpy # Copy left string\n"
+            
+            # Concatenate right string
+            op_assembly += "  mov rdi, rax # Destination buffer (strcpy returns dest)\n"
+            op_assembly += "  mov rsi, QWORD PTR [rsp] # Source (right string)\n"
+            # Add strcat to externs if not already there
+            if "strcat" not in self.externs:
+                self.externs.append("strcat")
+            op_assembly += "  call strcat # Concatenate right string\n"
+            
+            # Clean up stack
+            op_assembly += "  add rsp, 16 # Pop strings\n"
+            
+            # Result is in RAX (buffer pointer)
+            return op_assembly
+            
+        # Non-string operations
         # Evaluate left operand
         op_assembly += self.visit(node.left, context) 
         op_assembly += "  push rax # Push left operand\n"
@@ -551,6 +889,29 @@ class Compiler:
         else:
             raise CompilerError(f"Unsupported binary operator type '{node.op_token.type}' (op val: '{node.op}') at L{node.op_token.lineno}")
         return op_assembly
+
+    def get_expr_type(self, node, context):
+        """Helper method to determine expression type for string concatenation checks"""
+        if isinstance(node, StringLiteralNode):
+            return "string"
+        elif isinstance(node, IntegerLiteralNode):
+            return "int"
+        elif isinstance(node, IdentifierNode):
+            var_name = node.value
+            if var_name in self.current_method_locals:
+                return self.current_method_locals[var_name]['type']
+            elif var_name in self.current_method_params:
+                return self.current_method_params[var_name]['type']
+        elif isinstance(node, FunctionCallNode):
+            func_name = node.name
+            if func_name == "input" or func_name == "to_string":
+                return "string"
+            elif func_name == "to_int":
+                return "int"
+            elif func_name == "read":
+                return "string"
+        # Default for unknown/unhandled expressions
+        return "unknown"
 
     def visit_IfNode(self, node: IfNode, context):
         if_assembly = f"  # If statement at L{node.lineno}\n"

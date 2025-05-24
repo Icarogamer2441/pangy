@@ -1,0 +1,10 @@
+class Main {
+    def main() -> void {
+        var name string = input("Enter your name: ")
+        var age int = to_int(input("Enter your age: ")) // you can also use to_string()
+        
+        print("Hello, ", name, "! You are ", age, " years old.")
+
+        print("Age as string: ", to_string(age))
+    }
+}

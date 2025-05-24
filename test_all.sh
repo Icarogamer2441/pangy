@@ -9,6 +9,8 @@ pangy examples/classinparams.pgy -o classinparams
 pangy examples/exitfunc.pgy -o exitfunc
 pangy examples/macros.pgy -o macros
 pangy examples/macrosinclass.pgy -o macrosinclass
+pangy examples/inputsandtypes.pgy -o inputsandtypes
+pangy examples/files.pgy -o files
 
 echo "Running hello..."
 ./hello
@@ -43,5 +45,11 @@ echo "--------------------------------"
 echo "Running macrosinclass..."
 ./macrosinclass
 echo "--------------------------------"
+echo "Running inputsandtypes..."
+./inputsandtypes
+echo "--------------------------------"
+echo "Running files..."
+./files
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files

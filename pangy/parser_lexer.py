@@ -103,7 +103,7 @@ class Lexer:
             return Token(TT_CLASS, 'class', self.lineno, start_col)
         elif result == 'def':
             return Token(TT_DEF, 'def', self.lineno, start_col)
-        elif result == 'void' or result == 'int' or result == 'string': # Added 'string' as a type
+        elif result == 'void' or result == 'int' or result == 'string' or result == 'file': # Added 'file' as a type
             return Token(TT_TYPE, result, self.lineno, start_col)
         elif result == 'print':
             return Token(TT_PRINT, 'print', self.lineno, start_col)

@@ -44,9 +44,14 @@ classinparams
 exitfunc
 macros
 macrosinclass
+inputsandtypes
+files
 
 # Logs
 *.log
 
 # OS files
 .DS_Store 
+
+# Text files
+*.txt
