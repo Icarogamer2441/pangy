@@ -26,6 +26,13 @@ class Compiler:
         self.next_if_label_id = 0 # For if/else labels
         self.next_loop_id = 0 # For loop labels
         self.next_list_header_label_id = 0 # For list static data
+        self.next_append_label_id = 0 # For append function labels
+        self.next_pop_label_id = 0 # For pop function labels
+        self.next_index_label_id = 0 # For index function labels
+        self.next_array_access_id = 0 # For array access operations
+        self.next_to_int_id = 0 # For to_int function labels
+        self.next_to_string_id = 0 # For to_string function labels
+        self.next_input_id = 0 # For input function labels
         self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen", "strcpy", "strcat", "system", "popen", "pclose", "free", "chdir"] # Added chdir
         
         self.current_method_params = {}
@@ -38,7 +45,6 @@ class Compiler:
         self.loop_end_labels = []
         # For macro support
         self.macros = {} # Maps macro names to MacroDefNode objects
-        self.array_access_counter = 0
         self.class_vars = {}  # Maps class_name -> {var_name -> (offset, type, is_public)}
 
     def new_string_label(self, value):
@@ -102,6 +108,8 @@ class Compiler:
             lineno_attr = getattr(node.token, 'lineno', 'unknown')
         elif lineno_attr is None and hasattr(node, 'op_token'): # For BinaryOpNode potentially
              lineno_attr = getattr(node.op_token, 'lineno', 'unknown')
+        elif lineno_attr is None and hasattr(node, 'method_name_token'): # For MethodCallNode
+             lineno_attr = getattr(node.method_name_token, 'lineno', 'unknown')
         elif lineno_attr is None:
             lineno_attr = 'unknown'
         raise CompilerError(f"No visit_{node.__class__.__name__} method for node {type(node)} (op: {getattr(node, 'op', 'N/A')}) at L{lineno_attr}")
@@ -1265,9 +1273,7 @@ class Compiler:
                 raise CompilerError(f"index() expects two arguments (string, position), got {len(node.arguments)} at L{node.name_token.lineno}")
             
             # Add a unique ID to avoid duplicate labels
-            if not hasattr(self, 'next_index_label_id'):
-                self.next_index_label_id = 0
-            index_label_id = self.next_index_label_id
+            index_id = self.next_index_label_id
             self.next_index_label_id += 1
             
             code = f"  # index(string, position) call at L{node.name_token.lineno}\n"
@@ -1282,7 +1288,7 @@ class Compiler:
             
             # Check for null string
             code += "  cmp r12, 0 # Check for null string\n"
-            code += f"  jne .L_index_not_null_{node.name_token.lineno}_{index_label_id}\n"
+            code += f"  jne .L_index_not_null_{index_id}\n"
             
             # Handle null string error
             error_msg = self.new_string_label("Error: Cannot index a null string.\n")
@@ -1291,7 +1297,7 @@ class Compiler:
             code += "  mov rdi, 1\n"
             code += "  call exit\n"
             
-            code += f".L_index_not_null_{node.name_token.lineno}_{index_label_id}:\n"
+            code += f".L_index_not_null_{index_id}:\n"
             
             # Get string length using strlen for bounds check
             if "strlen" not in self.externs:
@@ -1302,13 +1308,13 @@ class Compiler:
             
             # Bounds check
             code += "  cmp r13, 0 # Check if index < 0\n"
-            code += f"  jl .L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}\n"
+            code += f"  jl .L_index_out_of_bounds_{index_id}\n"
             code += "  cmp r13, r14 # Check if index >= length\n"
-            code += f"  jge .L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}\n"
-            code += f"  jmp .L_index_in_bounds_{node.name_token.lineno}_{index_label_id}\n"
+            code += f"  jge .L_index_out_of_bounds_{index_id}\n"
+            code += f"  jmp .L_index_in_bounds_{index_id}\n"
             
             # Handle out of bounds error
-            code += f".L_index_out_of_bounds_{node.name_token.lineno}_{index_label_id}:\n"
+            code += f".L_index_out_of_bounds_{index_id}:\n"
             error_msg = self.new_string_label("Error: String index out of bounds.\n")
             code += f"  lea rdi, {error_msg}[rip]\n"
             code += "  call printf\n"
@@ -1316,7 +1322,7 @@ class Compiler:
             code += "  call exit\n"
             
             # Get character at index
-            code += f".L_index_in_bounds_{node.name_token.lineno}_{index_label_id}:\n"
+            code += f".L_index_in_bounds_{index_id}:\n"
             code += "  mov rax, r12 # String pointer\n"
             code += "  add rax, r13 # Add index to get character address\n"
             code += "  movzx rax, BYTE PTR [rax] # Load character ASCII value (zero-extended to 64 bits)\n"
@@ -1338,6 +1344,10 @@ class Compiler:
             if len(node.arguments) != 2:
                 raise CompilerError(f"append() expects two arguments (list, value), got {len(node.arguments)} at L{node.name_token.lineno}")
 
+            # Use a unique ID for this append call
+            append_id = self.next_append_label_id
+            self.next_append_label_id += 1
+
             code = f"  # append(list, value) call at L{node.name_token.lineno}\n"
             # Evaluate list pointer (arg 0)
             code += self.visit(node.arguments[0], context) # List pointer in RAX
@@ -1351,8 +1361,8 @@ class Compiler:
             code += "  pop rdi    # List pointer is now in RDI\n"
 
             # Check if list_ptr (RDI) is null (meaning uninitialized list)
-            null_list_label = f".L_append_null_list_{node.name_token.lineno}"
-            not_null_list_label = f".L_append_not_null_list_{node.name_token.lineno}"
+            null_list_label = f".L_append_null_list_{append_id}"
+            not_null_list_label = f".L_append_not_null_list_{append_id}"
             code += "  cmp rdi, 0\n"
             code += f"  je {null_list_label}\n"
 
@@ -1361,17 +1371,17 @@ class Compiler:
             code += "  mov r12, QWORD PTR [rdi]     # r12 = capacity = list_ptr[0]\n"
             code += "  mov r13, QWORD PTR [rdi + 8] # r13 = length   = list_ptr[1]\n"
             code += "  cmp r13, r12                 # if length >= capacity\n"
-            code += f"  jl .L_append_has_space_{node.name_token.lineno}\n"
+            code += f"  jl .L_append_has_space_{append_id}\n"
 
             code += "  # No space, reallocate\n"
             code += "  mov rax, r12                 # current capacity in RAX\n"
             code += "  test rax, rax                # Check if capacity is 0\n"
-            code += f"  jnz .L_append_double_cap_{node.name_token.lineno}\n"
+            code += f"  jnz .L_append_double_cap_{append_id}\n"
             code += "  mov r12, 8                   # If capacity was 0, set new capacity to 8 (e.g.)\n"
-            code += f"  jmp .L_append_set_new_cap_{node.name_token.lineno}\n"
-            code += f".L_append_double_cap_{node.name_token.lineno}:\n"
+            code += f"  jmp .L_append_set_new_cap_{append_id}\n"
+            code += f".L_append_double_cap_{append_id}:\n"
             code += "  shl r12, 1                   # new_capacity = capacity * 2\n"
-            code += f".L_append_set_new_cap_{node.name_token.lineno}:\n"
+            code += f".L_append_set_new_cap_{append_id}:\n"
             # r12 now holds new_capacity
 
             code += "  push rsi                     # Save value (RSI) before realloc\n"
@@ -1385,7 +1395,7 @@ class Compiler:
             code += "  mov QWORD PTR [rdi], r12     # list_ptr[0] = new_capacity\n"
             # R13 (length) is still correct
 
-            code += f".L_append_has_space_{node.name_token.lineno}:\n"
+            code += f".L_append_has_space_{append_id}:\n"
             code += "  mov rax, r13                 # RAX = current length (index to insert at)\n"
             code += "  imul rax, 8                  # offset for element = length * 8\n"
             code += "  add rax, 16                  # total offset = header_size + element_offset\n"
@@ -1408,7 +1418,7 @@ class Compiler:
 
             # Simplification: append() will return the (potentially new) list_ptr in RAX
             code += "  mov rax, rdi                 # Return new list_ptr in RAX\n"
-            code += f"  jmp .L_append_end_{node.name_token.lineno}\n"
+            code += f"  jmp .L_append_end_{append_id}\n"
 
             # Handle null list case: allocate initial list
             code += f"{null_list_label}:\n"
@@ -1424,9 +1434,9 @@ class Compiler:
             code += "  mov QWORD PTR [rdi], r12     # list_ptr[0] = capacity\n"
             code += "  mov QWORD PTR [rdi + 8], r13 # list_ptr[1] = length (still 0)\n"
             # Now jump to the part that adds the element (which expects length in r13)
-            code += f"  jmp .L_append_has_space_{node.name_token.lineno} # This will add the first element\n"
+            code += f"  jmp .L_append_has_space_{append_id} # This will add the first element\n"
 
-            code += f".L_append_end_{node.name_token.lineno}:\n"
+            code += f".L_append_end_{append_id}:\n"
             # Result (new list pointer) is in RAX.
             # The caller who has the list variable (e.g. `myList`) must update it with RAX.
             # If `append` is used as a statement, `myList = append(myList, val)` is implied.
@@ -1439,6 +1449,10 @@ class Compiler:
             if len(node.arguments) != 1:
                 raise CompilerError(f"pop() expects exactly one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
             
+            # Use a unique ID for this pop call
+            pop_id = self.next_pop_label_id
+            self.next_pop_label_id += 1
+            
             code = f"  # pop(list) call at L{node.name_token.lineno}\n"
             # Evaluate list pointer
             code += self.visit(node.arguments[0], context) # List pointer in RAX
@@ -1446,7 +1460,7 @@ class Compiler:
             
             # Check for null list
             code += "  cmp rdi, 0 # Check for null list pointer\n"
-            code += f"  jne .L_pop_not_null_{node.name_token.lineno}\n"
+            code += f"  jne .L_pop_not_null_{pop_id}\n"
             
             # Handle null list error
             error_msg = self.new_string_label("Error: Cannot pop from a null list.\n")
@@ -1455,12 +1469,12 @@ class Compiler:
             code += "  mov rdi, 1\n"
             code += "  call exit\n"
             
-            code += f".L_pop_not_null_{node.name_token.lineno}:\n"
+            code += f".L_pop_not_null_{pop_id}:\n"
             
             # Check if list is empty
             code += "  mov r12, QWORD PTR [rdi + 8] # r12 = length\n"
             code += "  cmp r12, 0 # Check if list is empty\n"
-            code += f"  jne .L_pop_not_empty_{node.name_token.lineno}\n"
+            code += f"  jne .L_pop_not_empty_{pop_id}\n"
             
             # Handle empty list error
             error_msg = self.new_string_label("Error: Cannot pop from an empty list.\n")
@@ -1469,7 +1483,7 @@ class Compiler:
             code += "  mov rdi, 1\n"
             code += "  call exit\n"
             
-            code += f".L_pop_not_empty_{node.name_token.lineno}:\n"
+            code += f".L_pop_not_empty_{pop_id}:\n"
             
             # Get last element's value
             code += "  dec r12 # r12 = length - 1 (last element index)\n"
@@ -1634,6 +1648,10 @@ class Compiler:
             if len(node.arguments) != 1:
                 raise CompilerError(f"input() expects exactly one argument (prompt string), got {len(node.arguments)} L{node.name_token.lineno}")
             
+            # Add unique ID for labels
+            input_id = self.next_input_id
+            self.next_input_id += 1
+            
             code = f"  # input() call at L{node.name_token.lineno}\n"
             
             # First, print the prompt using printf
@@ -1671,7 +1689,7 @@ class Compiler:
             code += "  pop rax # Restore buffer pointer to RAX\n"
             
             # Remove trailing newline if present
-            label_end = f".L_input_end_{node.name_token.lineno}"
+            label_end = f".L_input_end_{input_id}"
             code += "  push rax # Save buffer pointer\n"
             code += "  mov rdi, rax # Buffer for strlen\n"
             
@@ -1697,18 +1715,22 @@ class Compiler:
             if len(node.arguments) != 1:
                 raise CompilerError(f"to_int() expects exactly one argument (string), got {len(node.arguments)} L{node.name_token.lineno}")
             
+            # Use unique IDs for labels
+            to_int_id = self.next_to_int_id
+            self.next_to_int_id += 1
+            
             code = f"  # to_int() call at L{node.name_token.lineno}\n"
             
             # Get the string in RAX
             code += self.visit(node.arguments[0], context)
             code += "  test rax, rax # Check if string pointer is null\n"
-            code += "  jnz .Lto_int_valid_ptr_{0}\n".format(node.name_token.lineno)
+            code += f"  jnz .Lto_int_valid_ptr_{to_int_id}\n"
             code += "  mov rax, 0 # Return 0 for null string\n"
-            code += "  jmp .Lto_int_done_{0}\n".format(node.name_token.lineno)
-            code += ".Lto_int_valid_ptr_{0}:\n".format(node.name_token.lineno)
+            code += f"  jmp .Lto_int_done_{to_int_id}\n"
+            code += f".Lto_int_valid_ptr_{to_int_id}:\n"
             code += "  mov rdi, rax # String to convert\n"
             code += "  call atoi # Convert string to integer\n"
-            code += ".Lto_int_done_{0}:\n".format(node.name_token.lineno)
+            code += f".Lto_int_done_{to_int_id}:\n"
             # Result is in RAX
             return code
 
@@ -1716,6 +1738,10 @@ class Compiler:
             # to_string() function - converts an integer to string
             if len(node.arguments) != 1:
                 raise CompilerError(f"to_string() expects exactly one argument (int), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            # Use unique IDs for labels
+            to_string_id = self.next_to_string_id
+            self.next_to_string_id += 1
             
             code = f"  # to_string() call at L{node.name_token.lineno}\n"
             
@@ -1837,10 +1863,17 @@ class Compiler:
                 self.externs.append("strcat")
             op_assembly += "  call strcat # Concatenate right string\n"
             
-            # Clean up stack
-            op_assembly += "  add rsp, 16 # Pop strings\n"
+            # Save result before stack cleanup
+            op_assembly += "  mov r14, rax # Save result in r14 temporarily\n"
             
-            # Result is in RAX (buffer pointer)
+            # Clean up stack - do not free the source strings, only pop them from stack
+            # This is crucial to avoid double free errors
+            op_assembly += "  add rsp, 16 # Pop string pointers from stack (don't free them)\n"
+            
+            # Move result to rax
+            op_assembly += "  mov rax, r14 # Move result back to RAX\n"
+            
+            # Result is in RAX (new buffer pointer)
             return op_assembly
         
         # For string comparison operations
@@ -2111,41 +2144,48 @@ class Compiler:
         
         if_assembly += self.visit(node.condition, context)
         jump_instruction = ""
-        op_type = node.condition.op_token.type
         
-        if is_string_comparison:
-            # For string comparisons, the result of strcmp is in RAX
-            # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
-            if op_type == TT_LESS_THAN:
-                jump_instruction = "jge" # Jump if RAX >= 0 (not less)
-            elif op_type == TT_GREATER_THAN:
-                jump_instruction = "jle" # Jump if RAX <= 0 (not greater)
-            elif op_type == TT_LESS_EQUAL:
-                jump_instruction = "jg"  # Jump if RAX > 0 (not less/equal)
-            elif op_type == TT_GREATER_EQUAL:
-                jump_instruction = "jl"  # Jump if RAX < 0 (not greater/equal)
-            elif op_type == TT_EQUAL:
-                jump_instruction = "jne" # Jump if RAX != 0 (not equal)
-            elif op_type == TT_NOT_EQUAL:
-                jump_instruction = "je"  # Jump if RAX == 0 (equal)
+        # Check if condition has op_token (e.g., BinaryOpNode) before accessing it
+        if hasattr(node.condition, 'op_token'):
+            op_type = node.condition.op_token.type
+            
+            if is_string_comparison:
+                # For string comparisons, the result of strcmp is in RAX
+                # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
+                if op_type == TT_LESS_THAN:
+                    jump_instruction = "jge" # Jump if RAX >= 0 (not less)
+                elif op_type == TT_GREATER_THAN:
+                    jump_instruction = "jle" # Jump if RAX <= 0 (not greater)
+                elif op_type == TT_LESS_EQUAL:
+                    jump_instruction = "jg"  # Jump if RAX > 0 (not less/equal)
+                elif op_type == TT_GREATER_EQUAL:
+                    jump_instruction = "jl"  # Jump if RAX < 0 (not greater/equal)
+                elif op_type == TT_EQUAL:
+                    jump_instruction = "jne" # Jump if RAX != 0 (not equal)
+                elif op_type == TT_NOT_EQUAL:
+                    jump_instruction = "je"  # Jump if RAX == 0 (equal)
+                else:
+                    raise CompilerError(f"Unsupported string comparison operator '{op_type}' in if. L{node.condition.op_token.lineno}")
             else:
-                raise CompilerError(f"Unsupported string comparison operator '{op_type}' in if. L{node.condition.op_token.lineno}")
+                # For integer comparisons, we use the flags set by cmp instruction
+                if op_type == TT_LESS_THAN:
+                    jump_instruction = "jge"
+                elif op_type == TT_GREATER_THAN:
+                    jump_instruction = "jle"
+                elif op_type == TT_LESS_EQUAL:
+                    jump_instruction = "jg"
+                elif op_type == TT_GREATER_EQUAL:
+                    jump_instruction = "jl"
+                elif op_type == TT_EQUAL:
+                    jump_instruction = "jne"
+                elif op_type == TT_NOT_EQUAL:
+                    jump_instruction = "je"
+                else:
+                    raise CompilerError(f"Unsupported comparison operator '{node.condition.op_token.type}' in if. L{node.condition.op_token.lineno}")
         else:
-            # For integer comparisons, we use the flags set by cmp instruction
-            if op_type == TT_LESS_THAN:
-                jump_instruction = "jge"
-            elif op_type == TT_GREATER_THAN:
-                jump_instruction = "jle"
-            elif op_type == TT_LESS_EQUAL:
-                jump_instruction = "jg"
-            elif op_type == TT_GREATER_EQUAL:
-                jump_instruction = "jl"
-            elif op_type == TT_EQUAL:
-                jump_instruction = "jne"
-            elif op_type == TT_NOT_EQUAL:
-                jump_instruction = "je"
-            else:
-                raise CompilerError(f"Unsupported comparison operator '{node.condition.op_token.type}' in if. L{node.condition.op_token.lineno}")
+            # For non-binary operations (like MethodCallNode), use a simple truthiness check
+            # If the value in RAX is non-zero, it's considered true
+            jump_instruction = "jz" # Jump if RAX is zero (false)
         
         jump_target = else_label if node.else_block else end_if_label
         if_assembly += f"  {jump_instruction} {jump_target}\n"
@@ -2481,11 +2521,9 @@ class Compiler:
         return code
 
     def visit_ArrayAccessNode(self, node: ArrayAccessNode, context):
-        # Add a unique ID generator for array access operations
-        if not hasattr(self, 'array_access_counter'):
-            self.array_access_counter = 0
-        self.array_access_counter += 1
-        unique_id = f"{node.lineno}_{self.array_access_counter}"
+        # Use a unique ID for array access operations
+        array_access_id = self.next_array_access_id
+        self.next_array_access_id += 1
         
         # Determine the element type for this array access
         element_type = self.get_array_element_type(node.array_expr, context)
@@ -2504,18 +2542,18 @@ class Compiler:
 
         # Check for null list pointer
         code += "  cmp rax, 0 # Check for null pointer \n"
-        code += f"  jne .L_access_not_null_{unique_id}\n"
+        code += f"  jne .L_access_not_null_{array_access_id}\n"
         # Handle null pointer access
         error_msg_null = self.new_string_label("Error: Null pointer access in array operation.\n")
         code += f"  lea rdi, {error_msg_null}[rip]\n"
         code += "  call printf\n"
         code += "  mov rdi, 1\n"
         code += "  call exit\n"
-        code += f".L_access_not_null_{unique_id}:\n"
+        code += f".L_access_not_null_{array_access_id}:\n"
         
         # Bounds check
-        idx_ok_label = f".L_access_idx_ok_{unique_id}"
-        idx_err_label = f".L_access_idx_err_{unique_id}"
+        idx_ok_label = f".L_access_idx_ok_{array_access_id}"
+        idx_err_label = f".L_access_idx_err_{array_access_id}"
 
         code += "  mov rcx, QWORD PTR [rax + 8] # length in RCX\n"
         code += "  cmp rbx, 0                   # if index < 0\n"
