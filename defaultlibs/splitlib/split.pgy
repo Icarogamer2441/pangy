@@ -1,0 +1,68 @@
+class Splitter {
+    def split(input string, delimiter string) -> string[] {
+        var result string[] = {}
+        var current string = ""
+        var i int = 0
+        var inp_len int = length(input)
+        loop {
+            if (i >= inp_len) {
+                stop
+            }
+            var char string = index(input, i)
+            if (char == delimiter) {
+                if (current != "") {
+                    append(result, current)
+                }
+                current = ""
+            } else {
+                current = current + char
+            }
+            i++
+        }
+        if (current != "") {
+            append(result, current)
+        }
+        return result
+    }
+
+    def split_empty(input string) -> string[] {
+        var result string[] = {}
+        var current string = ""
+        var i int = 0
+        var inp_len int = length(input)
+        loop {
+            if (i >= inp_len) {
+                stop
+            }
+            var char string = index(input, i)
+            if (char == " ") {
+                if (current != "") {
+                    append(result, current)
+                }
+                current = ""
+            } else if (char == "\t") {
+                if (current != "") {
+                    append(result, current)
+                }
+                current = ""
+            } else if (char == "\n") {
+                if (current != "") {
+                    append(result, current)
+                }
+                current = ""
+            } else if (char == "\r") {
+                if (current != "") {
+                    append(result, current)
+                }
+                current = ""
+            } else {
+                current = current + char
+            }
+            i++
+        }
+        if (current != "") {
+            append(result, current)
+        }
+        return result
+    }
+}

@@ -1,0 +1,43 @@
+class ListPrint {
+    def print_str(list string[]) -> void {
+        var i int = 1
+        var list_len int = length(list)
+        var final_format string = ""
+        if (list_len == 0) {
+            print("Empty list")
+            return 0
+        }
+        final_format = "{" + "\"" + list[0] + "\""
+        loop {
+            if (i >= list_len) {
+                stop
+            }
+            final_format = final_format + ", " + "\"" + list[i] + "\""
+            i++
+        }
+        final_format = final_format + "}"
+        print(final_format)
+    }
+
+    def print_int(list_int int[]) -> void {
+        var i int = 1
+        var list_len int = length(list_int)
+        var final_format_ints string = ""
+        if (list_len == 0) {
+            print("Empty list")
+            return 0
+        }
+        var str_idx string = to_string(list_int[0])
+        final_format_ints = "{" + str_idx
+        loop {
+            if (i >= list_len) {
+                stop
+            }
+            str_idx = to_string(list_int[i])
+            final_format_ints = final_format_ints + ", " + str_idx
+            i++
+        }
+        final_format_ints = final_format_ints + "}"
+        print(final_format_ints)
+    }
+}

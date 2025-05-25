@@ -241,6 +241,52 @@ The compiler will find these in `~/.pangylibs/stringutils/formatters.pgy` and `~
 
 If a library with the same name already exists in `~/.pangylibs`, the `install` command will overwrite it, after printing a warning.
 
+### Default Libraries
+
+Pangy comes with a few default libraries for common tasks. You can install them using the provided script:
+
+```bash
+./install_libs.sh
+```
+
+This script will copy the `defaultlibs` directory (containing `listlib` and `splitlib`) into your `~/.pangylibs` folder.
+
+**Using the Default Libraries:**
+
+*   **List Utilities (`listlib`)**:
+    *   Printing lists: `include listlib.listprint.ListPrint`
+        *   Use `ListPrint.new().print_int(your_int_list)`
+        *   Use `ListPrint.new().print_str(your_string_list)`
+    *   Concatenating lists: `include listlib.listconc.ListConcat`
+        *   Use `ListConcat.new().concat_int(list1, list2)`
+        *   Use `ListConcat.new().concat_str(list1, list2)`
+
+*   **String Splitting (`splitlib`)**:
+    *   `include splitlib.split.Splitter`
+        *   `Splitter.new().split(input_string, delimiter_string)`: Splits a string by a specified delimiter.
+        *   `Splitter.new().split_empty(input_string)`: Splits a string by whitespace characters (space, tab, newline, carriage return).
+
+**Example using `splitlib`:**
+```pangy
+include splitlib.split.Splitter
+include listlib.listprint.ListPrint // For printing the result
+
+class Main {
+    def main() -> void {
+        var text string = "hello world pangy lang"
+        var splitter Splitter = Splitter.new()
+        var printer ListPrint = ListPrint.new()
+
+        var words string[] = splitter.split(text, " ")
+        printer.print_str(words) // Output: {"hello", "world", "pangy", "lang"}
+
+        var data string = "item1\titem2\nitem3"
+        var items string[] = splitter.split_empty(data)
+        printer.print_str(items) // Output: {"item1", "item2", "item3"}
+    }
+}
+```
+
 ## Macro System
 
 Pangy supports macros at both global and class level. Macros allow for compile-time code generation.

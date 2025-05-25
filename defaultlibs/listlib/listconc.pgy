@@ -1,0 +1,49 @@
+class ListConcat {
+    def concat_str(list1 string[], list2 string[]) -> string[] {
+        var result string[] = {}
+        var i int = 0
+        var list1_len int = length(list1)
+        var list2_len int = length(list2)
+        loop {
+            if (i >= list1_len) {
+                stop
+            }
+            append(result, list1[i])
+            i++
+        }
+
+        i = 0
+        loop {
+            if (i >= list2_len) {
+                stop
+            }
+            append(result, list2[i])
+            i++
+        }
+        return result
+    }
+
+    def concat_int(list1 int[], list2 int[]) -> int[] {
+        var result int[] = {}
+        var i int = 0
+        var list1_len int = length(list1)
+        var list2_len int = length(list2)
+        loop {
+            if (i >= list1_len) {
+                stop
+            }
+            append(result, list1[i])
+            i++
+        }
+
+        i = 0
+        loop {
+            if (i >= list2_len) {
+                stop
+            }
+            append(result, list2[i])
+            i++
+        }
+        return result
+    }
+}
