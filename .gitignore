@@ -54,6 +54,7 @@ bitandshifts
 string_format
 string_idx
 listret
+publicprivate
 
 # Logs
 *.log

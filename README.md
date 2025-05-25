@@ -1,83 +1,245 @@
 # Pangy Programming Language
 
-Pangy is a custom programming language with its own compiler, designed to compile to x86-64 assembly.
+Pangy is a custom programming language implemented with a Python-based lexer, parser, and compiler that targets x86-64 assembly (GAS syntax).
 
 ## Features
 
-- Class-based object-oriented programming
-- Methods with typed parameters
-- Control structures (if/else, loops)
-- Variables with type declarations
-- Support for basic data types (int, string)
-- String operations (concatenation, comparison)
-- Macro system with object context support
-- Print statements with variable substitution
-- Module system with selective imports
-- Input functions and type conversion utilities
-- File operations (open, close, read, write)
+*   **Static Typing**: Variables are statically typed (e.g., `int`, `string`, `list`, custom class types).
+*   **Class-Based Object Orientation**:
+    *   Define classes with methods and variables.
+    *   Public and private access modifiers for class variables (`public var x int`, `private var y string`).
+    *   Instance creation using `ClassName.new()`.
+    *   Access instance variables using `this:varName` (within the class) or `object::varName` (from outside, if public).
+    *   Method calls: `this:methodName()` or `object.methodName()`.
+*   **Control Flow**:
+    *   `if/else` statements.
+    *   `loop` (infinite loop) with `stop` (break).
+*   **Basic Data Types**:
+    *   `int` (64-bit integers).
+    *   `string` (heap-allocated, null-terminated).
+*   **Collections**:
+    *   Dynamic Lists (e.g., `var myList int[] = [1, 2, 3]`).
+        *   `append(list, value)`: Appends a value to a list (list may be reallocated).
+        *   `pop(list)`: Removes and returns the last element from a list.
+        *   `length(list_or_string)`: Returns the length of a list or string.
+        *   Array access: `myList[index]`.
+*   **Functions**:
+    *   Built-in functions like `print(...)`, `exit(code)`, `input(prompt)`, `to_int(string)`, `to_string(int)`, `index(string, position)`.
+    *   File I/O: `open(filename, mode)`, `close(file_pointer)`, `write(file_pointer, content)`, `read(file_pointer)`.
+*   **Operators**:
+    *   Arithmetic: `+`, `-`, `*`, `/`, `%`.
+    *   String concatenation: `+`.
+    *   Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=` (works for integers and strings).
+    *   Bitwise: `&`, `|`, `^`, `~`.
+    *   Shift: `<<`, `>>` (arithmetic right shift), `>>>` (logical right shift).
+    *   Postfix increment/decrement: `i++`, `i--`.
+*   **Macros**:
+    *   Simple text-substitution macros (e.g., `@define PI 3`).
+    *   Function-like macros (e.g., `@define ADD(a,b) a+b`).
+    *   Class-level macros.
+*   **Comments**: Single-line comments with `//`.
+*   **Assembly Generation**: Compiles to x86-64 assembly language (GAS syntax, Intel dialect).
+    *   Uses `printf` for printing.
+    *   Uses `malloc`, `realloc`, `strcpy`, `strcat`, `strlen` for string and list operations.
+    *   Supports `main()` with `argc`, `argv` parameters.
+
+## Compiler Implementation Details
+
+*   **`this` Pointer Handling**: For instance methods, the `this` pointer (initially in `RDI`) is saved onto the stack at the beginning of the method. Subsequent accesses to `this:variable` or assignments like `this:variable = value` load this saved pointer to ensure correctness even if `RDI` is used by intermediate function calls (e.g., during string operations).
+*   **String Operations**: String concatenation creates new strings on the heap. `strlen`, `strcpy`, `strcat` are used.
+*   **List Operations**: Lists are heap-allocated with a header storing capacity and length. `append` may reallocate memory.
+*   **Stack Management**: Method calls manage the stack for parameters and local variables. Stack is kept 16-byte aligned before `call` instructions.
+
+## Getting Started
+
+### Prerequisites
+
+*   Python 3.x
+*   GCC (for assembling and linking the output assembly code)
+
+### Compilation and Execution
+
+1.  **Run the Compiler**:
+    ```bash
+    python -m pangy.compiler your_source_file.pgy
+    ```
+    This will generate an assembly file (e.g., `output.s`).
+
+2.  **Assemble and Link**:
+    ```bash
+    gcc -no-pie output.s -o your_program_name
+    ```
+    (Replace `output.s` with the actual name of your generated assembly file, and `your_program_name` with your desired executable name).
+
+3.  **Run the Executable**:
+    ```bash
+    ./your_program_name
+    ```
+
+### Example `hello.pgy`
+
+```pangy
+class Main {
+    def main() -> void {
+        print("Hello, Pangy!")
+        var x int = 10
+        var y int = 20
+        print("x + y = ", x + y)
+
+        var s1 string = "Hello"
+        var s2 string = "World"
+        print(s1 + " " + s2 + "!")
+    }
+}
+```
+
+### Public/Private Example
+
+See `examples/publicprivate.pgy` for an example of class variable access control. The compiler now correctly handles saving and restoring the `this` pointer, ensuring that member variable assignments within methods (like `this:result = ...`) work correctly even after calls to external functions that might modify `RDI` (such as string manipulation functions).
+
+## Development
+
+The language is under active development. Key components are:
+
+*   `pangy/parser_lexer.py`: Contains the lexer and parser logic (AST node definitions).
+*   `pangy/compiler.py`: The core compiler that translates AST to x86-64 assembly.
+
+Feel free to explore the examples directory for more code samples.
 
 ## Include System
 
-Pangy supports importing code from other files using the `include` directive. You can import entire files, specific classes, inner classes, or even specific macros.
+Pangy supports importing code from other files using the `include` directive. The system resolves include paths by first checking relative to the current file's directory, and then searching in a global library directory (`~/.pangylibs`).
 
-### Import syntax
+### Import Syntax
 
+The `include` directive uses a dot-separated path to specify what to import. This path can refer to:
+- An entire file.
+- A specific class within a file.
+- An inner class within a parent class.
+- A specific macro within a file.
+
+**Syntax Examples:**
+
+```pangy
+// Import an entire file (e.g., 'mylibrary.pgy' or 'mylibrary/utils.pgy')
+include mylibrary
+include mylibrary.utils
+
+// Import a specific class 'MyClass'
+// This will look for 'mylibrary.pgy' and import 'MyClass' from it.
+include mylibrary.MyClass
+// This will look for 'mylibrary/utils.pgy' and import 'MyClass' from it.
+include mylibrary.utils.MyClass
+
+// Import an inner class 'Inner' from 'MyClass' in 'mylibrary/utils.pgy'
+include mylibrary.utils.MyClass.Inner
+
+// Import a specific macro '@myMacro'
+// This will look for 'mylibrary.pgy' and import '@myMacro' from it.
+include mylibrary.@myMacro
+// This will look for 'mylibrary/utils.pgy' and import '@myMacro' from it.
+include mylibrary.utils.@myMacro
 ```
-// Import an entire file
-include filename
 
-// Import a specific class
-include filename.ClassName
+### File Resolution
 
-// Import an inner class
-include filename.ClassName.InnerClass
+1.  **Local Directory**: Pangy first attempts to resolve the include path relative to the directory of the file containing the `include` statement.
+    *   `include mymodule` will look for `mymodule.pgy` in the same directory.
+    *   `include mylib.utils` will look for `mylib/utils.pgy` relative to the current file.
 
-// Import a specific macro
-include filename.@macroname
-```
+2.  **Pangy Libraries (`~/.pangylibs`)**: If the file is not found locally, Pangy searches in the `~/.pangylibs` directory. This directory serves as a central repository for shared libraries.
+    *   `include mylib.utils` will look for `~/.pangylibs/mylib/utils.pgy`.
+    *   `include anotherlib` will look for `~/.pangylibs/anotherlib.pgy`.
+
+If an include cannot be resolved in either location, the compiler will issue an error.
 
 ### Example
 
-File: math.pgy
-```
-class Math {
+**File: `~/.pangylibs/math/operations.pgy`** (after installing a 'math' library)
+```pangy
+class Operations {
     def add(a int, b int) -> int {
         return a + b
     }
-    
-    def sub(a int, b int) -> int {
+    def subtract(a int, b int) -> int {
         return a - b
     }
-    
-    def mul(a int, b int) -> int {
-        return a * b
-    }
-    
-    def div(a int, b int) -> int {
-        return a / b
-    }
-    
-    def mod(a int, b int) -> int {
-        return a % b
-    }
 }
+
+macro PI 3
 ```
 
-File: main.pgy
-```
-include math.Math // you can also import macros with 'include filename.@macroname'
-// and inner classes with 'include filename.ClassName.InnerClass'
+**File: `myproject/main.pgy`**
+```pangy
+// Assuming 'math/operations.pgy' exists in ~/.pangylibs
+include math.operations.Operations // Import only the Operations class
+include math.operations.@PI       // Import only the PI macro
+
+// Example of a local import
+// include localutils // Would look for 'localutils.pgy' in 'myproject/'
 
 class Main {
     def main() -> void {
-        var name string = input("Enter your name: ")
-        var age int = to_int(input("Enter your age: "))
-        
-        print("Hello, ", name, "! You are ", age, " years old.")
-        print("Age as string: ", to_string(age))
+        var ops Operations = Operations.new()
+        print("10 + 5 = ", ops.add(10, 5))
+        print("PI = ", @PI)
+
+        // var localHelper LocalUtils = LocalUtils.new() // If localutils.pgy existed
     }
 }
 ```
+The `main` function in `cli.py` now orchestrates the parsing of the main file and all its transitive dependencies (resolved via the new include logic) into a single Abstract Syntax Tree (AST). This master AST, containing all necessary classes and macros, is then passed to the compiler.
+
+## Library Management
+
+Pangy allows you to install and use shared libraries from a central location, `~/.pangylibs`.
+
+### The `~/.pangylibs` Directory
+
+This directory (located in your user's home directory, e.g., `/home/user/.pangylibs`) is where shared Pangy libraries are stored. When you `include` a module, and it's not found locally, the compiler will look for it here.
+
+The structure inside `~/.pangylibs` mirrors the import path. For example, an `include mylib.utils` would correspond to `~/.pangylibs/mylib/utils.pgy`.
+
+### Installing Libraries
+
+You can install a library (a folder containing `.pgy` files and potentially subfolders) using the `pangy install` command.
+
+**Command:**
+```bash
+python -m pangy install path/to/your/library_folder
+```
+Or, if `pangy` is an executable script in your PATH:
+```bash
+pangy install path/to/your/library_folder
+```
+
+**Example:**
+
+Suppose you have a library named `stringutils` located at `~/dev/pangy_libs/stringutils`. This folder might contain:
+```
+stringutils/
+  formatters.pgy
+  validators.pgy
+  helpers/
+    common.pgy
+```
+
+To install it:
+```bash
+python -m pangy install ~/dev/pangy_libs/stringutils
+```
+This command will:
+1. Create `~/.pangylibs` if it doesn't exist.
+2. Copy the entire `stringutils` folder into `~/.pangylibs`, resulting in `~/.pangylibs/stringutils/`.
+
+Now, in any Pangy project, you can use:
+```pangy
+include stringutils.formatters.MyFormatter
+include stringutils.helpers.common
+```
+The compiler will find these in `~/.pangylibs/stringutils/formatters.pgy` and `~/.pangylibs/stringutils/helpers/common.pgy` respectively.
+
+If a library with the same name already exists in `~/.pangylibs`, the `install` command will overwrite it, after printing a warning.
 
 ## Macro System
 
@@ -450,14 +612,23 @@ Bitwise and shift operations are useful for low-level bit manipulation, implemen
 To compile a Pangy program:
 
 ```bash
+python -m pangy compile your_program.pgy
+# or just:
 python -m pangy your_program.pgy
 ```
 
-Options:
-- `-o OUTPUT` - Specify output file name
-- `-S` - Output assembly instead of an executable
-- `--ast` - Print the abstract syntax tree
-- `--tokens` - Print the lexical tokens
+To install a library:
+```bash
+python -m pangy install path/to/library_folder
+```
+
+Refer to `python -m pangy --help` for all commands and options.
+
+Common Options for `compile`:
+- `-o OUTPUT` - Specify output file name for executable or assembly.
+- `-S` - Output assembly code (.s file) instead of an executable.
+- `--ast` - Print the combined Abstract Syntax Tree from all included files and exit.
+- `--tokens` - Print the lexical tokens from the main input file and exit.
 
 ## String Operations
 
@@ -616,3 +787,78 @@ Argument 3: arg3
 ```
 
 **Note**: The first argument (`argv[0]`) is always the program name, following the traditional C/C++ convention.
+
+## Class Variables (Public and Private)
+
+Pangy supports class-level variables with public and private visibility modifiers. These variables are associated with object instances and can be accessed using the appropriate syntax.
+
+### Declaration
+
+Class variables must be declared at the class level (outside any method) using the `public` or `private` keywords:
+
+```pangy
+class Math {
+    public var result int = 0  // Public class variable
+
+    private var a int = 0      // Private class variable
+    private var b int = 0      // Private class variable
+
+    def add(a int, b int) -> void {
+        this:a = a
+        this:b = b
+        this:result = this:a + this:b
+    }
+}
+```
+
+### Access Modifiers
+
+- `public`: Variables are accessible from outside the class
+- `private`: Variables are only accessible from within the class methods
+
+### Accessing Class Variables
+
+From inside the class methods, use the `this:` prefix:
+
+```pangy
+this:variable_name = value
+var x = this:variable_name
+```
+
+From outside the class, use the `::` accessor for public variables:
+
+```pangy
+var math Math = Math.new()
+math.add(1, 2)
+print(math::result)  // Accessing public variable
+// print(math::a)    // Error: Cannot access private variable
+```
+
+### Example
+
+```pangy
+class Math {
+    public var result int = 0
+
+    private var a int = 0
+    private var b int = 0
+
+    def add(a int, b int) -> void {
+        this:a = a
+        this:b = b
+        this:result = this:a + this:b
+    }
+}
+
+class Main {
+    def main() -> void {
+        var math Math = Math.new()
+        math.add(1, 2)
+        print(math::result)
+        // print(math::a) // this will throw an error of private access
+        // print(math::b) // this will also throw an error of private access
+    }
+}
+```
+
+Class variables can be of any type, including primitives (int, string) and custom classes.

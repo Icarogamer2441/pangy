@@ -1,5 +1,9 @@
-include math.Math // you can also import macros with 'include filename.@macroname'
-// and inner classes with 'include filename.ClassName.InnerClass'
+include math.math.Math // the include system only supports importing the whole file or class
+// to include files inside folders use 'include parent.filename'
+// other examples:
+// include parent.child.filename
+// include parent.child.filename.ClassName
+// include parent.filename.ClassName
 
 class Main {
     def main() -> void {

@@ -1,0 +1,43 @@
+class Math {
+    public var result int = 0
+
+    private var a int = 0
+    private var b int = 0
+
+    def add(a int, b int) -> void {
+        this:a = a
+        this:b = b
+        this:result = this:a + this:b
+    }
+}
+
+class Concatenator {
+    public var result string = ""
+    private var str1 string = ""
+    private var str2 string = ""
+    
+    def concat(str1 string, str2 string) -> void {
+        this:str1 = str1
+        this:str2 = str2
+        
+        // Try concatenation with local variables first
+        var s1 string = this:str1
+        var s2 string = this:str2
+        var s3 string = s1 + s2
+        this:result = s3
+    }
+}
+
+class Main {
+    def main() -> void {
+        var math Math = Math.new()
+        math.add(1, 2)
+        print("1 + 2 = ", math::result)
+        // print(math::a) // this will throw an error of private access
+        // print(math::b) // this will also throw an error of private access
+        
+        var concatenator Concatenator = Concatenator.new()
+        concatenator.concat("Hello", "World")
+        print("result = ", concatenator::result)
+    }
+}

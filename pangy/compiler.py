@@ -2,7 +2,7 @@ from .parser_lexer import (
     ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode, Token,
     ParamNode, IntegerLiteralNode, IdentifierNode, ThisNode,
     MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, ReturnNode, StringLiteralNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode,
-    MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode,
+    MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, ClassVarAccessNode,
     TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL,
     TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
     TT_PLUSPLUS, TT_MINUSMINUS,
@@ -26,18 +26,20 @@ class Compiler:
         self.next_if_label_id = 0 # For if/else labels
         self.next_loop_id = 0 # For loop labels
         self.next_list_header_label_id = 0 # For list static data
-        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen"] # Added realloc, memcpy, strlen
+        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen", "strcpy", "strcat"] # Added strcpy, strcat
         
         self.current_method_params = {}
         self.current_method_locals = {} # For local variables
         self.current_method_stack_offset = 0 # Tracks current available stack slot relative to RBP for new locals
         self.current_method_total_stack_needed = 0 # For params + locals in prologue
         self.current_method_context = None
+        self.this_ptr_rbp_offset = None # Offset for the saved 'this' pointer on stack for instance methods
         # For loop support
         self.loop_end_labels = []
         # For macro support
         self.macros = {} # Maps macro names to MacroDefNode objects
         self.array_access_counter = 0
+        self.class_vars = {}  # Maps class_name -> {var_name -> (offset, type, is_public)}
 
     def new_string_label(self, value):
         if value in self.string_literals:
@@ -152,11 +154,83 @@ class Compiler:
         class_assembly = ""
         # Use safe class label (replace dots for nested classes)
         class_label = node.name.replace('.', '_')
+        
+        # Process class variables first to register them
+        self.class_vars[class_label] = {}
+        offset = 0
+        for var_node in node.class_vars:
+            var_type = var_node.type
+            var_name = var_node.name
+            is_public = var_node.is_public
+            # Store class variable info (offset from object start, type, public/private)
+            self.class_vars[class_label][var_name] = (offset, var_type, is_public)
+            offset += 8  # Assuming all variables (including list pointers) need 8 bytes
+            
         for method_node in node.methods:
             self.current_method_context = (class_label, method_node.name)
             class_assembly += self.visit(method_node)
         self.current_method_context = None
         return class_assembly
+
+    def visit_ClassVarDeclNode(self, node: ClassVarDeclNode, context=None):
+        # This is only called during class processing to set up class variables
+        # The actual code for variable declaration is handled in visit_ClassNode
+        return ""
+
+    def visit_ClassVarAccessNode(self, node: ClassVarAccessNode, context):
+        class_name, method_name = context
+        var_name = node.var_name
+        
+        # Check if this is a 'this:varname' access
+        is_this_access = isinstance(node.object_expr, ThisNode)
+        
+        # Accessing a variable from the current class
+        if is_this_access:
+            if var_name not in self.class_vars.get(class_name, {}):
+                raise CompilerError(f"Undefined class variable '{var_name}' at L{node.lineno}")
+                
+            offset, var_type, is_public = self.class_vars[class_name][var_name]
+            code = f"  # Access to class variable this:{var_name} at L{node.lineno}\n"
+            if self.this_ptr_rbp_offset is None:
+                raise CompilerError(f"'this' pointer not saved for instance method context. L{node.lineno}")
+            code += f"  mov rax, QWORD PTR [rbp {self.this_ptr_rbp_offset}]  # Load saved 'this' pointer\n"
+            code += f"  mov rax, QWORD PTR [rax + {offset}]  # Load {var_name} from object\n"
+            return code
+        
+        # Accessing a variable from another object (e.g., obj::varname)
+        else:
+            # First evaluate the object expression
+            code = self.visit(node.object_expr, context)
+            code += "  mov rcx, rax  # Save object pointer in RCX\n"
+            
+            # Now we need to determine the class type of the object
+            # This is a simplification - in a real compiler, we'd have a type system
+            # For now, use the value stored in the local var or param (if available)
+            obj_class_type = None
+            if isinstance(node.object_expr, IdentifierNode):
+                obj_name = node.object_expr.value
+                if obj_name in self.current_method_locals:
+                    obj_class_type = self.current_method_locals[obj_name]['type']
+                elif obj_name in self.current_method_params:
+                    obj_class_type = self.current_method_params[obj_name]['type']
+                    
+            if not obj_class_type:
+                raise CompilerError(f"Cannot determine class type for object access at L{node.lineno}")
+            
+            obj_class_type = obj_class_type.replace('.', '_')  # Safe class name for lookup
+            
+            if var_name not in self.class_vars.get(obj_class_type, {}):
+                raise CompilerError(f"Undefined class variable '{var_name}' in class '{obj_class_type}' at L{node.lineno}")
+            
+            offset, var_type, is_public = self.class_vars[obj_class_type][var_name]
+            
+            # Check access permission
+            if not is_public and class_name != obj_class_type:
+                raise CompilerError(f"Cannot access private variable '{var_name}' from outside class '{obj_class_type}' at L{node.lineno}")
+            
+            code += f"  # Access to class variable {obj_class_type}::{var_name} at L{node.lineno}\n"
+            code += f"  mov rax, QWORD PTR [rcx + {offset}]  # Load {var_name} from object\n"
+            return code
 
     def visit_MethodNode(self, node: MethodNode, context=None):
         class_name, method_name = self.current_method_context
@@ -164,6 +238,7 @@ class Compiler:
         epilogue_label = f".L_epilogue_{class_name}_{method_name}"
         self.current_method_params = {} 
         self.current_method_locals = {}
+        self.this_ptr_rbp_offset = None # Reset for each method
         # Store method return type for later use in ReturnNode
         self.current_method_return_type = node.return_type
         method_text_assembly = ""
@@ -200,6 +275,11 @@ class Compiler:
         else: # Instance method
             explicit_param_arg_regs = ["rsi", "rdx", "rcx", "r8", "r9"]
             method_text_assembly += f"  # Instance method {class_name}.{method_name}. 'this' in RDI.\n"
+            # Reserve stack space for 'this' pointer and save it
+            current_rbp_offset_for_params -= 8 # Decrement first for this_ptr_rbp_offset
+            self.this_ptr_rbp_offset = current_rbp_offset_for_params
+            local_stack_needed_for_params += 8
+            method_text_assembly += f"  # 'this' pointer will be saved at [rbp {self.this_ptr_rbp_offset}]\n"
         
         for i, p_node in enumerate(node.params):
             local_stack_needed_for_params += 8 
@@ -252,6 +332,10 @@ class Compiler:
         
         if actual_stack_to_allocate > 0:
             method_text_assembly += f"  sub rsp, {actual_stack_to_allocate} # Allocate stack ({actual_stack_to_allocate})\n"
+
+        # Save 'this' pointer for instance methods after stack is allocated
+        if not is_method_static and self.this_ptr_rbp_offset is not None:
+            method_text_assembly += f"  mov QWORD PTR [rbp {self.this_ptr_rbp_offset}], rdi # Save 'this' pointer\n"
         
         # Special handling for main with argc/argv
         if has_argc_argv:
@@ -326,8 +410,8 @@ class Compiler:
     def visit_PrintNode(self, node: PrintNode, context):
         print_assembly = f"  # Print statement at L{node.lineno}\n"
         format_string_parts = []
-        arg_expr_nodes = [] # For expressions that are not string literals themselves
-        format_types = []  # Track format type for each argument
+        arg_expr_nodes = []
+        format_types = [] # Track format type for each argument
 
         for i, expr in enumerate(node.expressions):
             # Check for type conversion method calls (.as_string(), .as_int(), etc.)
@@ -393,6 +477,17 @@ class Compiler:
                     format_string_parts.append("FILE*@%p")
                     format_types.append("pointer")
                 else: # Default to %d for int[], int, or other/unknown element types
+                    format_string_parts.append("%d")
+                    format_types.append("int")
+                arg_expr_nodes.append(expr)
+            elif isinstance(expr, ClassVarAccessNode):
+                # Handle class variable access (this:var or obj::var)
+                var_type = self.get_expr_type(expr, context)
+                
+                if var_type == 'string':
+                    format_string_parts.append("%s")
+                    format_types.append("string")
+                else: # Default to %d for int or unknown/other types
                     format_string_parts.append("%d")
                     format_types.append("int")
                 arg_expr_nodes.append(expr)
@@ -588,11 +683,59 @@ class Compiler:
                 # ClassName.new() call
                 class_name_for_new = obj_name_or_class_name
                 call_assembly += f"  # Allocation for new {class_name_for_new} object\n"
-                # TODO: Determine actual size based on class fields later.
-                # For now, assume a minimal fixed size (e.g., 8 bytes for a pointer or placeholder).
-                object_size = 8 
+                
+                # Determine actual size based on class fields
+                safe_class_name = class_name_for_new.replace('.', '_')
+                object_size = 8  # Minimum size
+                
+                # Add space for class variables if they exist
+                if safe_class_name in self.class_vars:
+                    # Find the total size needed for all class variables
+                    class_vars = self.class_vars[safe_class_name]
+                    if class_vars:
+                        # Calculate size based on the last variable's offset + 8 bytes
+                        # (assuming all variables are 8 bytes)
+                        last_var_offset = max(offset for offset, _, _ in class_vars.values())
+                        object_size = last_var_offset + 8
+                
                 call_assembly += f"  mov rdi, {object_size}  # Size for malloc\n"
                 call_assembly += "  call malloc          # Allocate memory, result in RAX\n"
+                
+                # Initialize class variables if needed
+                if safe_class_name in self.class_vars and self.class_vars[safe_class_name]:
+                    call_assembly += "  mov r12, rax      # Save object pointer\n"
+                    
+                    # Find the class in the AST to get initialization expressions
+                    class_init_exprs = {}
+                    for cls in self.current_program_node.classes:
+                        if cls.name.replace('.', '_') == safe_class_name:
+                            for var_decl in cls.class_vars:
+                                class_init_exprs[var_decl.name] = var_decl.expression
+                            break
+
+                    # Initialize all class variables
+                    for var_name, (offset, var_type, _) in self.class_vars[safe_class_name].items():
+                        if var_name in class_init_exprs and class_init_exprs[var_name] is not None:
+                            # Initialize with the expression value
+                            call_assembly += "  mov rdi, r12      # Pass object pointer to initialization context\n"
+                            # Create a temporary context with the object as 'this'
+                            temp_context = (safe_class_name, "__init__")
+                            # Evaluate the initialization expression
+                            call_assembly += self.visit(class_init_exprs[var_name], temp_context)
+                            call_assembly += f"  mov QWORD PTR [r12 + {offset}], rax  # Initialize {var_name} with expression result\n"
+                        else:
+                            # Default initialization (0 for numbers, empty string for strings)
+                            if var_type == "string":
+                                # Empty string is represented as an empty string pointer
+                                empty_str_label = self.new_string_label("")
+                                call_assembly += f"  lea rax, {empty_str_label}[rip]  # Empty string for {var_name}\n"
+                                call_assembly += f"  mov QWORD PTR [r12 + {offset}], rax  # Initialize {var_name} to empty string\n"
+                            else:
+                                # Default to 0 for other types
+                                call_assembly += f"  mov QWORD PTR [r12 + {offset}], 0  # Initialize {var_name} to 0\n"
+                    
+                    call_assembly += "  mov rax, r12      # Restore object pointer to RAX\n"
+                
                 # Optional: call an initializer/constructor ClassName_ClassName if it exists
                 # call_assembly += f"  mov rdi, rax         # Pass new object ptr to constructor in RDI\n"
                 # call_assembly += f"  call {class_name_for_new}_{class_name_for_new} # Call constructor {ClassName}_init or {ClassName}_{ClassName}\n"
@@ -1246,6 +1389,7 @@ class Compiler:
         if node.op_token.type == TT_PLUS:
             if left_type == "string" or right_type == "string":
                 is_string_concat = True
+                op_assembly += f"  # String concatenation detected\n"
         elif node.op_token.type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
                                     TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
             if left_type == "string" and right_type == "string":
@@ -1431,6 +1575,37 @@ class Compiler:
                 return self.current_method_locals[var_name]['type']
             elif var_name in self.current_method_params:
                 return self.current_method_params[var_name]['type']
+        elif isinstance(node, ClassVarAccessNode):
+            # Get type of class variable
+            class_name, method_name = context
+            var_name = node.var_name
+            
+            # Check if this is a 'this:varname' access
+            is_this_access = isinstance(node.object_expr, ThisNode)
+            
+            if is_this_access:
+                # Accessing variable from current class
+                if var_name in self.class_vars.get(class_name, {}):
+                    _, var_type, _ = self.class_vars[class_name][var_name]
+                    return var_type
+            else:
+                # Accessing variable from another object (e.g., obj::varname)
+                if isinstance(node.object_expr, IdentifierNode):
+                    obj_name = node.object_expr.value
+                    obj_class_type = None
+                    
+                    if obj_name in self.current_method_locals:
+                        obj_class_type = self.current_method_locals[obj_name]['type']
+                    elif obj_name in self.current_method_params:
+                        obj_class_type = self.current_method_params[obj_name]['type']
+                    
+                    if obj_class_type:
+                        obj_class_type = obj_class_type.replace('.', '_')
+                        if var_name in self.class_vars.get(obj_class_type, {}):
+                            _, var_type, _ = self.class_vars[obj_class_type][var_name]
+                            return var_type
+            
+            return "unknown"  # Default if type cannot be determined
         elif isinstance(node, FunctionCallNode):
             func_name = node.name
             if func_name == "input" or func_name == "to_string":
@@ -1653,16 +1828,17 @@ class Compiler:
         return f"  jmp {end_label} # stop\n"
 
     def visit_AssignmentNode(self, node: AssignmentNode, context):
-        # Assignment statement: variable = expression  OR list[index] = expression
-        code = f"  # Assignment to {node.name_token.value if isinstance(node.name_token, Token) else 'list element'} at L{node.lineno}\n"
+        # Assignment statement: variable = expression  OR list[index] = expression OR object::var = expression
+        code = f"  # Assignment at L{node.lineno}\n"
         
         # Evaluate RHS first, result in RAX
         code += self.visit(node.expression, context)
         code += "  push rax # Save RHS value on stack\n"
 
-        # Determine if it's a simple variable assignment or array element assignment
-        if isinstance(node.name_token, Token): # Simple variable assignment: myVar = ...
-            var_name = node.name_token.value # node.name is used in parser, but name_token here
+        # Determine what kind of assignment this is
+        if isinstance(node.target, IdentifierNode):
+            # Simple variable assignment: myVar = ...
+            var_name = node.target.value
             if var_name in self.current_method_locals:
                 offset = self.current_method_locals[var_name]['offset_rbp']
             elif var_name in self.current_method_params:
@@ -1673,9 +1849,9 @@ class Compiler:
             code += "  pop rbx    # RHS value into RBX\n"
             code += f"  mov QWORD PTR [rbp {offset}], rbx # {var_name} = RBX\n"
         
-        elif isinstance(node.name_token, ArrayAccessNode): # Array element assignment: myList[idx] = ...
-            array_access_node = node.name_token # This was misnamed 'name' in AST, should be 'target' or 'lvalue'
-                                                 # For now, assume node.name_token is the ArrayAccessNode from parser
+        elif isinstance(node.target, ArrayAccessNode):
+            # Array element assignment: myList[idx] = ...
+            array_access_node = node.target
             
             # 1. Evaluate array expression (list_ptr)
             code += self.visit(array_access_node.array_expr, context) # list_ptr in RAX
@@ -1688,13 +1864,6 @@ class Compiler:
             code += "  pop rax    # list_ptr back in RAX\n"
             code += "  pop rcx    # RHS value in RCX (from first push rax)\n"
 
-            # Bounds check (optional, good practice)
-            # code += "  mov rdx, QWORD PTR [rax + 8] # Get length from list_ptr\n"
-            # code += "  cmp rbx, rdx                 # Compare index with length\n"
-            # code += "  jl .L_assign_index_in_bounds_{node.lineno} \\n"
-            # code += "  # Handle index out of bounds error here (e.g., print error and exit)\\n"
-            # code += f".L_assign_index_in_bounds_{node.lineno}:\\n"
-
             # Calculate address: list_ptr + 16 (header) + (index * 8)
             code += "  imul rbx, 8                  # index_offset = index * 8\n"
             code += "  add rbx, 16                  # total_offset = header_size + index_offset\n"
@@ -1702,6 +1871,60 @@ class Compiler:
             
             # Store RHS value (RCX) into the calculated address
             code += "  mov QWORD PTR [rax], rcx     # list_ptr[index] = RHS_value\n"
+            
+        elif isinstance(node.target, ClassVarAccessNode):
+            # Class variable assignment: this:field = ... or obj::field = ...
+            var_access_node = node.target
+            var_name = var_access_node.var_name
+            
+            # Check if this is a 'this:varname' access
+            is_this_access = isinstance(var_access_node.object_expr, ThisNode)
+            class_name, method_name = context
+            
+            if is_this_access:
+                # Assignment to a variable in the current class: this:field = ...
+                if var_name not in self.class_vars.get(class_name, {}):
+                    raise CompilerError(f"Assignment to undefined class variable '{var_name}' at L{node.lineno}")
+                    
+                offset, var_type, is_public = self.class_vars[class_name][var_name]
+                code += "  mov rdi, rdi   # 'this' pointer is in RDI\n"
+                code += "  pop rbx        # RHS value into RBX\n"
+                if self.this_ptr_rbp_offset is None:
+                     raise CompilerError(f"'this' pointer not saved for instance method context during assignment. L{node.lineno}")
+                code += f"  mov rdi, QWORD PTR [rbp {self.this_ptr_rbp_offset}] # Load saved 'this' pointer into RDI\n"
+                code += f"  mov QWORD PTR [rdi + {offset}], rbx  # this:{var_name} = RBX\n"
+            else:
+                # Assignment to a variable in another object: obj::field = ...
+                # First evaluate the object expression
+                code += self.visit(var_access_node.object_expr, context)
+                code += "  mov rdi, rax  # Save object pointer in RDI\n"
+                code += "  pop rbx       # RHS value into RBX\n"
+                
+                # Now we need to determine the class type of the object
+                obj_class_type = None
+                if isinstance(var_access_node.object_expr, IdentifierNode):
+                    obj_name = var_access_node.object_expr.value
+                    if obj_name in self.current_method_locals:
+                        obj_class_type = self.current_method_locals[obj_name]['type']
+                    elif obj_name in self.current_method_params:
+                        obj_class_type = self.current_method_params[obj_name]['type']
+                        
+                if not obj_class_type:
+                    raise CompilerError(f"Cannot determine class type for object access at L{node.lineno}")
+                
+                obj_class_type = obj_class_type.replace('.', '_')  # Safe class name for lookup
+                
+                if var_name not in self.class_vars.get(obj_class_type, {}):
+                    raise CompilerError(f"Assignment to undefined class variable '{var_name}' in class '{obj_class_type}' at L{node.lineno}")
+                
+                offset, var_type, is_public = self.class_vars[obj_class_type][var_name]
+                
+                # Check access permission
+                if not is_public and class_name != obj_class_type:
+                    raise CompilerError(f"Cannot access private variable '{var_name}' from outside class '{obj_class_type}' at L{node.lineno}")
+                
+                code += f"  # Assignment to class variable {obj_class_type}::{var_name} at L{node.lineno}\n"
+                code += f"  mov QWORD PTR [rdi + {offset}], rbx  # {var_name} = RBX\n"
         else:
             raise CompilerError(f"Invalid LHS for assignment at L{node.lineno}")
             

@@ -19,10 +19,15 @@ TT_EOF = 'EOF' # End of File
 TT_MACRO = 'MACRO'
 TT_AT = 'AT'
 
+# Public/Private keywords
+TT_PUBLIC = 'PUBLIC'
+TT_PRIVATE = 'PRIVATE'
+
 # New tokens for funcs.pgy
 TT_INT_LITERAL = 'INT_LITERAL'
 TT_COMMA = ','
 TT_COLON = ':' # For 'this:method'
+TT_DOUBLE_COLON = '::' # For accessing class variables from outside
 TT_PLUS = 'PLUS'
 TT_RETURN = 'RETURN'
 TT_THIS = 'THIS' # for the 'this' keyword
@@ -142,6 +147,10 @@ class Lexer:
             return Token(TT_STOP, 'stop', self.lineno, start_col)
         elif result == 'macro': # Added for macro keyword
             return Token(TT_MACRO, 'macro', self.lineno, start_col)
+        elif result == 'public': # Added for public keyword
+            return Token(TT_PUBLIC, 'public', self.lineno, start_col)
+        elif result == 'private': # Added for private keyword
+            return Token(TT_PRIVATE, 'private', self.lineno, start_col)
         else:
             return Token(TT_IDENTIFIER, result, self.lineno, start_col)
 
@@ -252,6 +261,11 @@ class Lexer:
                 token = Token(TT_COMMA, ',', self.lineno, start_col)
                 self.advance()
                 return token
+
+            if self.current_char == ':' and self.pos + 1 < len(self.text) and self.text[self.pos+1] == ':':
+                self.advance()
+                self.advance()
+                return Token(TT_DOUBLE_COLON, '::', self.lineno, start_col)
 
             if self.current_char == ':':
                 token = Token(TT_COLON, ':', self.lineno, start_col)
@@ -438,9 +452,10 @@ class ClassNode(ASTNode):
         self.methods = methods  # List of MethodNode
         self.nested_classes = nested_classes if nested_classes is not None else []  # List of nested ClassNode
         self.macros = []  # List of MacroDefNode
+        self.class_vars = []  # List of ClassVarDeclNode
 
     def __repr__(self):
-        return f"ClassNode(name='{self.name}', methods={self.methods}, nested_classes={self.nested_classes}, macros={self.macros})"
+        return f"ClassNode(name='{self.name}', methods={self.methods}, nested_classes={self.nested_classes}, macros={self.macros}, class_vars={self.class_vars})"
 
 class ParamNode(ASTNode):
     def __init__(self, name_token, type_token):
@@ -603,13 +618,13 @@ class StopNode(ASTNode):
         return f"StopNode(L{self.lineno})"
 
 class AssignmentNode(ASTNode):
-    def __init__(self, name_token, expression, lineno):
-        self.name = name_token.value
-        self.name_token = name_token
+    def __init__(self, target, expression, lineno):
+        self.target = target  # IdentifierNode, ArrayAccessNode, or ClassVarAccessNode
         self.expression = expression
         self.lineno = lineno
+    
     def __repr__(self):
-        return f"AssignmentNode(name='{self.name}', expr={self.expression}, L{self.lineno})"
+        return f"AssignmentNode(target={self.target}, expr={self.expression}, L{self.lineno})"
 
 # Macro-related AST nodes
 class MacroDefNode(ASTNode):
@@ -657,6 +672,30 @@ class ArrayAccessNode(ExprNode):
 
     def __repr__(self):
         return f"ArrayAccessNode(array={self.array_expr}, index={self.index_expr}, L{self.lineno})"
+
+class ClassVarDeclNode(ASTNode):
+    def __init__(self, name_token, type_token, expr_node, is_public, lineno):
+        self.name = name_token.value
+        self.name_token = name_token
+        self.type = type_token.value
+        self.type_token = type_token
+        self.expression = expr_node  # The expression to initialize the variable
+        self.is_public = is_public   # Boolean indicating public (True) or private (False)
+        self.lineno = lineno
+
+    def __repr__(self):
+        visibility = "public" if self.is_public else "private"
+        return f"ClassVarDeclNode(name='{self.name}', type='{self.type}', is_public={self.is_public}, expr={self.expression}, L{self.lineno})"
+
+class ClassVarAccessNode(ExprNode):
+    def __init__(self, object_expr, var_name_token):
+        self.object_expr = object_expr  # The object expression (e.g., this, or an object variable)
+        self.var_name = var_name_token.value
+        self.var_name_token = var_name_token
+        self.lineno = var_name_token.lineno
+
+    def __repr__(self):
+        return f"ClassVarAccessNode(object={self.object_expr}, var_name='{self.var_name}', L{self.lineno})"
 
 # Parser
 class Parser:
@@ -785,26 +824,31 @@ class Parser:
         return MacroDefNode(name_token, params, body, macro_token.lineno)
 
     def parse_class_definition(self):
-        # class_definition ::= "class" IDENTIFIER "{" class_definition* method_definition* macro_definition* "}"
+        # class_definition ::= "class" IDENTIFIER "{" class_definition* class_var_declaration* method_definition* macro_definition* "}"
         self.consume(TT_CLASS)
         name_token = self.consume(TT_IDENTIFIER)
         self.consume(TT_LBRACE)  # '{'
 
         nested_classes = []
         methods = []
-        macros = []  # Added list for macros inside the class
-        # Loop for nested classes, method definitions, or macro definitions
-        while self.current_token.type in (TT_CLASS, TT_STATIC, TT_DEF, TT_MACRO):
+        macros = []
+        class_vars = []  # Added for class-level variables
+        
+        # Loop for nested classes, method definitions, macro definitions, or class var declarations
+        while self.current_token.type in (TT_CLASS, TT_STATIC, TT_DEF, TT_MACRO, TT_PUBLIC, TT_PRIVATE):
             if self.current_token.type == TT_CLASS:
                 nested_classes.append(self.parse_class_definition())
             elif self.current_token.type == TT_MACRO:
-                macros.append(self.parse_macro_definition())  # Parse macro definition inside class
-            else:
+                macros.append(self.parse_macro_definition())
+            elif self.current_token.type in (TT_PUBLIC, TT_PRIVATE):
+                class_vars.append(self.parse_class_var_declaration())
+            else:  # TT_STATIC or TT_DEF
                 methods.append(self.parse_method_definition())
 
         self.consume(TT_RBRACE)  # '}'
         class_node = ClassNode(name_token, methods, nested_classes)
-        class_node.macros = macros  # Add macros to the ClassNode
+        class_node.macros = macros
+        class_node.class_vars = class_vars  # Store the class variables
         return class_node
 
     def parse_parameters(self):
@@ -873,7 +917,16 @@ class Parser:
             return self.parse_stop_statement()
         elif start_token.type == TT_VAR: # Added for variable declaration
             return self.parse_var_declaration_statement()
-        elif start_token.type == TT_IDENTIFIER and self.token_idx + 1 < len(self.tokens) and self.tokens[self.token_idx + 1].type == TT_ASSIGN:
+        # Check for assignment statements
+        elif (start_token.type == TT_IDENTIFIER and self.token_idx + 1 < len(self.tokens) and 
+              (self.tokens[self.token_idx + 1].type == TT_ASSIGN or 
+               (self.tokens[self.token_idx + 1].type == TT_COLON and self.token_idx + 3 < len(self.tokens) and self.tokens[self.token_idx + 3].type == TT_ASSIGN) or
+               (self.tokens[self.token_idx + 1].type == TT_DOUBLE_COLON and self.token_idx + 3 < len(self.tokens) and self.tokens[self.token_idx + 3].type == TT_ASSIGN))):
+            return self.parse_assignment_statement()
+        # Check for assignments that start with "this:" (this:var = ...)
+        elif (start_token.type == TT_THIS and self.token_idx + 3 < len(self.tokens) and 
+              self.tokens[self.token_idx + 1].type == TT_COLON and 
+              self.tokens[self.token_idx + 3].type == TT_ASSIGN):
             return self.parse_assignment_statement()
         elif start_token.type in [TT_THIS, TT_IDENTIFIER, TT_LPAREN, TT_INT_LITERAL, TT_STRING_LITERAL]:
             # If it looks like the start of an expression, parse it as an expression statement.
@@ -952,11 +1005,52 @@ class Parser:
         return StopNode(stop_token.lineno)
 
     def parse_assignment_statement(self):
-        # assignment ::= IDENTIFIER "=" expression
-        name_token = self.consume(TT_IDENTIFIER)
+        # assignment ::= (IDENTIFIER | array_access | class_var_access) "=" expression
+        start_lineno = self.current_token.lineno
+        
+        # Parse the target of the assignment
+        target = None
+        
+        # Check if it's a 'this:var' access
+        if self.current_token.type == TT_THIS:
+            this_node = ThisNode(self.current_token)
+            self.advance()  # Consume 'this'
+            
+            if self.current_token.type == TT_COLON:
+                self.advance()  # Consume ':'
+                var_name_token = self.consume(TT_IDENTIFIER)
+                target = ClassVarAccessNode(this_node, var_name_token)
+            else:
+                tok = self.current_token
+                raise Exception(f"ParserError: Expected ':' after 'this' at L{tok.lineno}:C{tok.colno}")
+        # Simple variable assignment: identifier = expr
+        elif self.current_token.type == TT_IDENTIFIER:
+            target = IdentifierNode(self.current_token)
+            self.advance()
+            
+            # Check if it's a class variable access: this:var = expr or obj::var = expr
+            if self.current_token.type == TT_COLON:
+                self.advance()  # Consume ':'
+                var_name_token = self.consume(TT_IDENTIFIER)
+                target = ClassVarAccessNode(target, var_name_token)
+            elif self.current_token.type == TT_DOUBLE_COLON:
+                self.advance()  # Consume '::'
+                var_name_token = self.consume(TT_IDENTIFIER)
+                target = ClassVarAccessNode(target, var_name_token)
+            # Check if it's an array access: arr[idx] = expr
+            elif self.current_token.type == TT_LBRACKET:
+                lbracket_token = self.consume(TT_LBRACKET)
+                index_expr = self.parse_expression()
+                self.consume(TT_RBRACKET)
+                target = ArrayAccessNode(target, index_expr, lbracket_token)
+        else:
+            # Unexpected token for assignment target
+            tok = self.current_token
+            raise Exception(f"ParserError: Expected identifier or 'this' for assignment target at L{tok.lineno}:C{tok.colno}")
+        
         self.consume(TT_ASSIGN)
         expr_node = self.parse_expression()
-        return AssignmentNode(name_token, expr_node, name_token.lineno)
+        return AssignmentNode(target, expr_node, start_lineno)
 
     def parse_block(self):
         # block ::= "{" statement* "}"
@@ -1039,10 +1133,10 @@ class Parser:
         return self.parse_term()
         
     def parse_term(self):
-        # term ::= primary ( ( "." | ":" ) IDENTIFIER "(" arguments? ")" | "++" | "--" | "(" arguments ")" | "[" expression "]" )* 
+        # term ::= primary ( ( "." | ":" | "::" ) IDENTIFIER | "++" | "--" | "(" arguments? ")" | "[" expression "]" )*
         node = self.parse_primary()
 
-        while self.current_token.type in (TT_DOT, TT_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN, TT_AT, TT_LBRACKET):
+        while self.current_token.type in (TT_DOT, TT_COLON, TT_DOUBLE_COLON, TT_PLUSPLUS, TT_MINUSMINUS, TT_LPAREN, TT_AT, TT_LBRACKET):
             # Handle postfix increment/decrement
             if self.current_token.type in (TT_PLUSPLUS, TT_MINUSMINUS):
                 op_token = self.current_token
@@ -1085,7 +1179,7 @@ class Parser:
                     node = IdentifierNode(Token(TT_IDENTIFIER, composite_value, ident_token.lineno, ident_token.colno))
                 continue
 
-            # Handle this:method() or this:@macro() calls
+            # Handle this:method() or this:@macro() or this:varname calls
             if self.current_token.type == TT_COLON:
                 self.advance()  # Consume ':'
                 
@@ -1101,14 +1195,30 @@ class Parser:
                     node = MacroInvokeNode(macro_name_token, args, macro_name_token.lineno, node)
                     continue
                 
-                # Regular method call
-                method_name_token = self.consume(TT_IDENTIFIER)
-                self.consume(TT_LPAREN)
-                args = []
-                if self.current_token.type != TT_RPAREN:
-                    args = self.parse_argument_list()
-                self.consume(TT_RPAREN)
-                node = MethodCallNode(node, method_name_token, args)
+                # Check if it's a method call or variable access
+                next_token_is_lparen = (self.token_idx + 1 < len(self.tokens) and 
+                                       self.tokens[self.token_idx + 1].type == TT_LPAREN)
+                
+                if next_token_is_lparen:
+                    # Method call
+                    method_name_token = self.consume(TT_IDENTIFIER)
+                    self.consume(TT_LPAREN)
+                    args = []
+                    if self.current_token.type != TT_RPAREN:
+                        args = self.parse_argument_list()
+                    self.consume(TT_RPAREN)
+                    node = MethodCallNode(node, method_name_token, args)
+                else:
+                    # Class variable access with this:varname
+                    var_name_token = self.consume(TT_IDENTIFIER)
+                    node = ClassVarAccessNode(node, var_name_token)
+                continue
+                
+            # Handle objectname::varname for accessing class variables from outside
+            if self.current_token.type == TT_DOUBLE_COLON:
+                self.advance()  # Consume '::'
+                var_name_token = self.consume(TT_IDENTIFIER)
+                node = ClassVarAccessNode(node, var_name_token)
                 continue
 
             # Handle direct function calls
@@ -1228,6 +1338,25 @@ class Parser:
             type_str += "[]"
         
         return type_str
+
+    def parse_class_var_declaration(self):
+        # class_var_declaration ::= ("public" | "private") "var" IDENTIFIER TYPE ("=" expression)?
+        is_public = self.current_token.type == TT_PUBLIC
+        self.consume(TT_PUBLIC if is_public else TT_PRIVATE)
+        self.consume(TT_VAR)
+        name_token = self.consume(TT_IDENTIFIER)
+        
+        # Parse type using the helper method
+        type_string = self.parse_type_specifier()
+        type_token = Token(TT_TYPE, type_string, name_token.lineno, name_token.colno)
+        
+        # Check for optional initialization
+        expr_node = None
+        if self.current_token.type == TT_ASSIGN:
+            self.consume(TT_ASSIGN)
+            expr_node = self.parse_expression()
+        
+        return ClassVarDeclNode(name_token, type_token, expr_node, is_public, name_token.lineno)
 
     def parse(self):
         if not self.tokens or self.tokens[0].type == TT_EOF and len(self.tokens) == 1:

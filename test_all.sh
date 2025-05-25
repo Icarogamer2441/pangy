@@ -1,24 +1,25 @@
-pangy examples/hello.pgy -o hello
-pangy examples/funcs.pgy -o funcs
-pangy examples/vars.pgy -o vars
-pangy examples/ifs.pgy -o ifs
-pangy examples/imports/main.pgy -o imp_main
-pangy examples/loops.pgy -o loops
-pangy examples/classinclass.pgy -o classinclass
-pangy examples/classinparams.pgy -o classinparams
-pangy examples/exitfunc.pgy -o exitfunc
-pangy examples/macros.pgy -o macros
-pangy examples/macrosinclass.pgy -o macrosinclass
-pangy examples/inputsandtypes.pgy -o inputsandtypes
-pangy examples/files.pgy -o files
-pangy examples/lists.pgy -o lists
-pangy examples/matrixes.pgy -o matrixes
-pangy examples/strcmp.pgy -o strcmp
-pangy examples/args.pgy -o args
-pangy examples/bitandshifts.pgy -o bitandshifts
-pangy examples/string_idx.pgy -o string_idx
-pangy examples/string_format.pgy -o string_format
-pangy examples/listret.pgy -o listret
+pangy compile examples/hello.pgy -o hello
+pangy compile examples/funcs.pgy -o funcs
+pangy compile examples/vars.pgy -o vars
+pangy compile examples/ifs.pgy -o ifs
+pangy compile examples/imports/main.pgy -o imp_main
+pangy compile examples/loops.pgy -o loops
+pangy compile examples/classinclass.pgy -o classinclass
+pangy compile examples/classinparams.pgy -o classinparams
+pangy compile examples/exitfunc.pgy -o exitfunc
+pangy compile examples/macros.pgy -o macros
+pangy compile examples/macrosinclass.pgy -o macrosinclass
+pangy compile examples/inputsandtypes.pgy -o inputsandtypes
+pangy compile examples/files.pgy -o files
+pangy compile examples/lists.pgy -o lists
+pangy compile examples/matrixes.pgy -o matrixes
+pangy compile examples/strcmp.pgy -o strcmp
+pangy compile examples/args.pgy -o args
+pangy compile examples/bitandshifts.pgy -o bitandshifts
+pangy compile examples/string_idx.pgy -o string_idx
+pangy compile examples/string_format.pgy -o string_format
+pangy compile examples/listret.pgy -o listret
+pangy compile examples/publicprivate.pgy -o publicprivate
 
 echo "Running hello..."
 ./hello
@@ -83,6 +84,9 @@ echo "--------------------------------"
 echo "Running listret..."
 ./listret
 echo "--------------------------------"
+echo "Running publicprivate..."
+./publicprivate
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate
 rm ./*.txt
