@@ -1,4 +1,4 @@
-include math.math.Math // the include system only supports importing the whole file or class
+include math.Math // the include system only supports importing the whole file or class
 // to include files inside folders use 'include parent.filename'
 // other examples:
 // include parent.child.filename
