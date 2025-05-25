@@ -24,7 +24,10 @@ Pangy is a custom programming language implemented with a Python-based lexer, pa
         *   `length(list_or_string)`: Returns the length of a list or string.
         *   Array access: `myList[index]`.
 *   **Functions**:
-    *   Built-in functions like `print(...)`, `exit(code)`, `input(prompt)`, `to_int(string)`, `to_string(int)`, `index(string, position)`.
+    *   Built-in functions like `print(...)`, `show(...)`, `exit(code)`, `input(prompt)`, `to_int(string)`, `to_string(int)`, `index(string, position)`.
+        *   `print(...)`: Display values with a newline at the end.
+        *   `show(...)`: Display values without adding a newline.
+    *   System interaction: `exec(command, mode)` for executing terminal commands.
     *   File I/O: `open(filename, mode)`, `close(file_pointer)`, `write(file_pointer, content)`, `read(file_pointer)`.
 *   **Operators**:
     *   Arithmetic: `+`, `-`, `*`, `/`, `%`.
@@ -426,6 +429,47 @@ class Main {
 }
 ```
 
+## Terminal Command Execution
+
+Pangy provides functionality to execute terminal commands with the `exec()` function.
+
+### Syntax
+
+```pangy
+exec(command, mode)
+```
+
+Where:
+- `command`: A string containing the shell command to execute
+- `mode`: An integer specifying how to handle execution:
+  - `0`: Execute command visibly (output appears in the terminal) and don't return any value
+  - `1`: Execute command in the background and return its output as a string
+  - `2`: Execute command in the background and return its exit code as an integer
+
+### Example
+
+```pangy
+class Main {
+    def main() -> void {
+        // Execute command visibly, no return value
+        exec("echo 'Hello, World!'", 0)
+        exec("ls", 0)
+        
+        // Execute command in background, return output as string
+        var result string = exec("echo 'Hello, World!'", 1)
+        print("Command output: ", result)
+        
+        // Execute command in background, return exit code
+        var exitCode int = exec("ls -la", 2)
+        print("Command exit code: ", exitCode)
+    }
+}
+```
+
+### Security Considerations
+
+Be cautious when using the `exec()` function as it allows direct access to the underlying system. Always validate any user input before including it in commands to prevent security vulnerabilities like command injection.
+
 ## Dynamic Lists
 
 Pangy supports dynamic lists (arrays) of integers or strings.
@@ -782,6 +826,41 @@ Pangy allows you to control how values are displayed in print statements using t
   var value = index("9", 0)
   print(value.as_int()) // Explicitly prints as integer: 57 (ASCII code for '9')
   ```
+
+## Output Functions
+
+Pangy provides two output functions with different behavior:
+
+### print() - Output with Newline
+
+The `print()` function displays values to the console and automatically adds a newline at the end.
+
+```pangy
+print("Hello")     // Outputs: Hello\n
+print("A", "B", "C") // Outputs: ABC\n
+```
+
+### show() - Output without Newline
+
+The `show()` function displays values to the console without adding a newline at the end.
+
+```pangy
+show("Hello ")
+show("World")     // Outputs: Hello World (no newline)
+print("!")        // Outputs: !\n
+
+// Useful for prompts
+show("Enter your name: ")
+var name string = input("")  // Input prompt on the same line
+```
+
+Both functions support the same arguments and type handling, including:
+- String literals
+- Integer literals 
+- Variables
+- Expressions
+- Function calls
+- Type display control (`.as_string()`, `.as_int()`)
 
 ## Command-Line Arguments
 

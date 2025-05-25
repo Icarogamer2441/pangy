@@ -26,7 +26,7 @@ class Compiler:
         self.next_if_label_id = 0 # For if/else labels
         self.next_loop_id = 0 # For loop labels
         self.next_list_header_label_id = 0 # For list static data
-        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen", "strcpy", "strcat"] # Added strcpy, strcat
+        self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen", "strcpy", "strcat", "system", "popen", "pclose", "free", "chdir"] # Added chdir
         
         self.current_method_params = {}
         self.current_method_locals = {} # For local variables
@@ -839,6 +839,392 @@ class Compiler:
             code += self.visit(node.arguments[0], context)
             code += "  mov rdi, rax # exit code\n"
             code += "  call exit\n"
+            return code
+        elif node.name == "show":
+            # Built-in show function - like print but without a newline
+            code = f"  # show() call at L{node.name_token.lineno}\n"
+            format_string_parts = []
+            arg_expr_nodes = []
+            format_types = [] # Track format type for each argument
+
+            for i, expr in enumerate(node.arguments):
+                # Check for type conversion method calls (.as_string(), .as_int(), etc.)
+                if isinstance(expr, MethodCallNode):
+                    # Handle methods like index(str, 0).as_string() or variable.as_string()
+                    if expr.method_name == "as_string":
+                        format_string_parts.append("%c")  # Use %c for character display
+                        arg_expr_nodes.append(expr.object_expr)
+                        format_types.append("char")  # Mark as character format
+                    elif expr.method_name == "as_int":
+                        format_string_parts.append("%d")  # Use %d for integer display
+                        arg_expr_nodes.append(expr.object_expr)
+                        format_types.append("int")
+                    else:
+                        # Default handling for other method calls
+                        node_type_for_print = self.get_expr_type(expr, context)
+                        if node_type_for_print == 'string':
+                            format_string_parts.append("%s")
+                            format_types.append("string")
+                        else:
+                            format_string_parts.append("%d")
+                            format_types.append("int")
+                        arg_expr_nodes.append(expr)
+                elif isinstance(expr, StringLiteralNode):
+                    format_string_parts.append(expr.value.replace("%", "%%"))
+                    # No need to add to arg_expr_nodes or format_types for string literals
+                elif isinstance(expr, IntegerLiteralNode):
+                    format_string_parts.append("%d")
+                    arg_expr_nodes.append(expr)
+                    format_types.append("int")
+                elif isinstance(expr, IdentifierNode):
+                    # Determine type of identifier to use %s or %d
+                    var_name = expr.value
+                    var_type = "unknown" # Default if not found, though it should be
+                    if var_name in self.current_method_locals:
+                        var_type = self.current_method_locals[var_name]['type']
+                    elif var_name in self.current_method_params:
+                        var_type = self.current_method_params[var_name]['type']
+                    
+                    if var_type == 'string':
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    elif var_type == 'file':
+                        # For file pointers, print as pointer value
+                        format_string_parts.append("FILE*@%p")
+                        format_types.append("pointer")
+                    # Add check for list types - printing a list variable directly prints its address (pointer)
+                    elif var_type.endswith("[]"):
+                        format_string_parts.append("%p") # Print list pointer address
+                        format_types.append("pointer")
+                    else: # Default to %d for int or unknown/other types for now
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, ArrayAccessNode):
+                    # Determine element type for format specifier using our new helper method
+                    element_type_for_print = self.get_array_element_type(expr.array_expr, context)
+                    
+                    if element_type_for_print == 'string':
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    elif element_type_for_print == 'file': # If we ever have file[] and print file[i]
+                        format_string_parts.append("FILE*@%p")
+                        format_types.append("pointer")
+                    else: # Default to %d for int[], int, or other/unknown element types
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, ClassVarAccessNode):
+                    # Handle class variable access (this:var or obj::var)
+                    var_type = self.get_expr_type(expr, context)
+                    
+                    if var_type == 'string':
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    else: # Default to %d for int or unknown/other types
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, FunctionCallNode):
+                    # Determine the function return type to use %s or %d
+                    func_name = expr.name
+                    if func_name == "input":  # input() returns string
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    elif func_name == "to_int":  # to_int() returns int
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    elif func_name == "to_string":  # to_string() returns string
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    elif func_name == "open":  # open() returns file
+                        format_string_parts.append("FILE*@%p")
+                        format_types.append("pointer")
+                    elif func_name == "index":  # index() now returns string
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    else:  # Default to %d for unknown functions
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, (BinaryOpNode, ThisNode)):
+                    # Check the expression type using our method
+                    node_type_for_print = self.get_expr_type(expr, context)
+                    if node_type_for_print == 'string':
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    else:
+                        format_string_parts.append("%d")
+                        format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, MacroInvokeNode):
+                    # For macro invocations, we'll assume they'll resolve to integers for now
+                    format_string_parts.append("%d")
+                    format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                elif isinstance(expr, UnaryOpNode):
+                    # Unary operations like ~a always result in integers
+                    format_string_parts.append("%d")
+                    format_types.append("int")
+                    arg_expr_nodes.append(expr)
+                else: 
+                    raise CompilerError(f"Cannot show expression of type {type(expr)} at L{node.name_token.lineno}")
+            
+            format_string = "".join(format_string_parts)
+            # Unlike print(), show() doesn't add a newline
+            format_label = self.new_printf_format_label(format_string)
+            printf_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+            num_val_args = len(arg_expr_nodes)
+            if num_val_args > (len(printf_arg_regs) -1) :
+                for i in range(num_val_args - 1, (len(printf_arg_regs) -1) - 1, -1):
+                    code += self.visit(arg_expr_nodes[i], context)
+                    code += "  push rax # Push printf stack argument\n"
+            for i in range(min(num_val_args, len(printf_arg_regs)-1) - 1, -1, -1):
+                code += self.visit(arg_expr_nodes[i], context)
+                target_reg = printf_arg_regs[i+1]
+                
+                # Special handling for char format (%c)
+                if i < len(format_types) and format_types[i] == "char":
+                    # For %c, we need to ensure only the low byte is used
+                    code += f"  movzx {target_reg}, al # Load character (zero-extended) into {target_reg}\n"
+                else:
+                    code += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
+                    
+            code += f"  lea {printf_arg_regs[0]}, {format_label}[rip] # Format string for printf\n"
+            code += "  mov rax, 0 # Num SSE registers for variadic call\n"
+            code += "  call printf\n"
+            if num_val_args > (len(printf_arg_regs) -1):
+                bytes_pushed = (num_val_args - (len(printf_arg_regs) -1)) * 8
+                code += f"  add rsp, {bytes_pushed} # Clean up printf stack arguments\n"
+            return code
+        elif node.name == "exec":
+            # exec(command, mode) - Execute a terminal command
+            if len(node.arguments) != 2:
+                raise CompilerError(f"exec() expects exactly two arguments (command, mode), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            code = f"  # exec() call at L{node.name_token.lineno}\n"
+            
+            # Generate a unique label for this exec call to avoid conflicts
+            if not hasattr(self, 'exec_counter'):
+                self.exec_counter = 0
+            exec_id = self.exec_counter
+            self.exec_counter += 1
+            
+            # Get the command string
+            code += self.visit(node.arguments[0], context)
+            code += "  push rax # Save command string\n"
+            
+            # Get the mode (0=visible, 1=return output, 2=return exit code)
+            code += self.visit(node.arguments[1], context)
+            code += "  mov r12, rax # Save mode in R12\n"
+            
+            # Restore command string
+            code += "  pop rdi # Command string in RDI\n"
+            
+            # Check for 'cd' command - special handling for directory changes
+            code += "  # Check if the command starts with 'cd '\n"
+            code += "  push rdi # Save command string\n"
+            # Check first char is 'c'
+            code += "  movzx rax, BYTE PTR [rdi]\n"
+            code += "  cmp rax, 'c'\n"
+            code += f"  jne .Lnot_cd_cmd_{exec_id}\n"
+            # Check second char is 'd'
+            code += "  movzx rax, BYTE PTR [rdi+1]\n"
+            code += "  cmp rax, 'd'\n"
+            code += f"  jne .Lnot_cd_cmd_{exec_id}\n"
+            # Check third char is space
+            code += "  movzx rax, BYTE PTR [rdi+2]\n"
+            code += "  cmp rax, ' '\n"
+            code += f"  jne .Lnot_cd_cmd_{exec_id}\n"
+            
+            # It's a cd command, extract the path (skip 'cd ' prefix)
+            code += "  # Handle 'cd' command by changing Pangy process directory\n"
+            code += "  lea rdi, [rdi+3] # Skip 'cd ' prefix\n"
+            code += "  call chdir # Change directory\n"
+            code += "  xor rax, rax # Return 0 (success)\n"
+            code += "  pop rdi # Restore and discard command string\n"
+            code += f"  jmp .Lexec_end_{exec_id}\n"
+            
+            code += f".Lnot_cd_cmd_{exec_id}:\n"
+            code += "  pop rdi # Restore command string\n"
+            
+            # Check the mode
+            code += "  cmp r12, 0 # Mode 0: Execute visibly without return\n"
+            code += f"  je .Lexec_mode0_{exec_id}\n"
+            code += "  cmp r12, 1 # Mode 1: Execute in background, return output\n"
+            code += f"  je .Lexec_mode1_{exec_id}\n"
+            code += "  cmp r12, 2 # Mode 2: Execute in background, return exit code\n"
+            code += f"  je .Lexec_mode2_{exec_id}\n"
+            
+            # Invalid mode
+            error_msg = self.new_string_label("Error: Invalid mode for exec(). Use 0, 1, or 2.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            # Mode 0: Just execute the command using system()
+            code += f".Lexec_mode0_{exec_id}:\n"
+            code += "  call system # Execute command using system()\n"
+            code += "  xor rax, rax # Return void (0)\n"
+            code += f"  jmp .Lexec_end_{exec_id}\n"
+            
+            # Mode 1: Execute in background and return output as string
+            code += f".Lexec_mode1_{exec_id}:\n"
+            # Open pipe to command using popen()
+            mode_str = self.new_string_label("r") # Read mode for popen
+            code += "  mov rsi, rdi # Save command string in RSI temporarily\n"
+            code += f"  lea rdi, {mode_str}[rip] # Mode 'r' for reading\n"
+            code += "  mov rdx, rsi # Command string to RDX\n"
+            code += "  mov rsi, rdi # Mode string to RSI\n"
+            code += "  mov rdi, rdx # Command string to RDI\n"
+            code += "  call popen # Open pipe to command\n"
+            code += "  mov r13, rax # Save FILE* pointer in R13\n"
+            
+            # Check if popen failed (returned NULL)
+            code += "  test r13, r13\n"
+            code += f"  jnz .Lpopen_success_{exec_id}\n"
+            
+            # Handle popen error
+            error_msg = self.new_string_label("Error: Failed to execute command with popen()\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            # If popen succeeded
+            code += f".Lpopen_success_{exec_id}:\n"
+            
+            # Allocate buffer for output (initial 4096 bytes)
+            code += "  mov rdi, 4096 # Initial buffer size\n" 
+            code += "  call malloc\n"
+            code += "  mov r14, rax # Buffer in R14\n"
+            
+            # Initialize buffer counters
+            code += "  mov r15, 0 # Current position in buffer\n"
+            code += "  mov rbx, 4096 # Current buffer size\n"
+            
+            # Start reading loop
+            code += f".Lread_loop_{exec_id}:\n"
+            
+            # Calculate buffer position for this read
+            code += "  lea rdi, [r14 + r15] # Current position in buffer\n"
+            
+            # Remaining space
+            code += "  mov rsi, rbx # Buffer size\n"
+            code += "  sub rsi, r15 # Subtract current position to get remaining space\n"
+            code += "  dec rsi # Leave space for null terminator\n"
+            
+            # Check if we need to expand the buffer
+            code += "  cmp rsi, 10 # If less than 10 bytes remain\n"
+            code += f"  jg .Lbuffer_ok_{exec_id}\n"
+            
+            # Expand buffer
+            code += "  mov rdi, rbx # Current size\n"
+            code += "  shl rdi, 1 # Double the size\n"
+            code += "  mov rcx, rdi # Save new size in RCX\n"
+            code += "  mov rdi, r14 # Current buffer\n"
+            code += "  mov rsi, rcx # New size\n"
+            code += "  call realloc\n"
+            code += "  mov r14, rax # Update buffer pointer\n"
+            code += "  mov rbx, rcx # Update buffer size\n"
+            
+            # Recalculate buffer position and space
+            code += "  lea rdi, [r14 + r15] # Current position in buffer\n"
+            code += "  mov rsi, rbx # Buffer size\n"
+            code += "  sub rsi, r15 # Remaining space\n"
+            code += "  dec rsi # Leave space for null terminator\n"
+            
+            code += f".Lbuffer_ok_{exec_id}:\n"
+            # Read a line from the pipe using fgets
+            code += "  mov rdx, r13 # FILE* stream\n"
+            code += "  call fgets # Read a line into buffer at current position\n"
+            
+            # Check if we've reached EOF (fgets returns NULL)
+            code += "  test rax, rax\n"
+            code += f"  jz .Lread_done_{exec_id}\n"
+            
+            # Update position by finding the length of what we just read
+            code += "  mov rdi, rax # Result from fgets (pointer to buffer we passed)\n"
+            code += "  call strlen\n"
+            code += "  add r15, rax # Update position\n"
+            
+            # Continue reading
+            code += f"  jmp .Lread_loop_{exec_id}\n"
+            
+            # Reading complete
+            code += f".Lread_done_{exec_id}:\n"
+            
+            # Null-terminate the buffer
+            code += "  mov byte ptr [r14 + r15], 0\n"
+            
+            # Close the pipe
+            code += "  mov rdi, r13 # FILE* pointer\n"
+            code += "  call pclose\n"
+            
+            # Return the buffer containing output
+            code += "  mov rax, r14\n"
+            code += f"  jmp .Lexec_end_{exec_id}\n"
+            
+            # Mode 2: Execute in background and return exit code
+            code += f".Lexec_mode2_{exec_id}:\n"
+            # Open pipe to command using popen()
+            mode_str = self.new_string_label("r") # Read mode for popen
+            code += "  mov rsi, rdi # Save command string in RSI temporarily\n"
+            code += f"  lea rdi, {mode_str}[rip] # Mode 'r' for reading\n"
+            code += "  mov rdx, rsi # Command string to RDX\n"
+            code += "  mov rsi, rdi # Mode string to RSI\n"
+            code += "  mov rdi, rdx # Command string to RDI\n"
+            code += "  call popen # Open pipe to command\n"
+            code += "  mov r13, rax # Save FILE* pointer in R13\n"
+            
+            # Check if popen failed (returned NULL)
+            code += "  test r13, r13\n"
+            code += f"  jnz .Lpopen_exit_success_{exec_id}\n"
+            
+            # Handle popen error
+            error_msg = self.new_string_label("Error: Failed to execute command with popen()\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            # If popen succeeded
+            code += f".Lpopen_exit_success_{exec_id}:\n"
+            
+            # Allocate a small buffer to discard output
+            code += "  mov rdi, 4096 # Buffer size\n"
+            code += "  call malloc\n"
+            code += "  mov r14, rax # Buffer in R14\n"
+            
+            # Read all output and discard
+            code += f".Lread_discard_loop_{exec_id}:\n"
+            code += "  mov rdi, r14 # Buffer\n"
+            code += "  mov rsi, 4096 # Buffer size\n"
+            code += "  mov rdx, r13 # FILE* stream\n"
+            code += "  call fgets\n"
+            code += "  test rax, rax\n"
+            code += f"  jnz .Lread_discard_loop_{exec_id}\n"
+            
+            # Free the discard buffer
+            code += "  mov rdi, r14 # Buffer\n"
+            code += "  call free\n"
+            
+            # Close pipe and get exit status
+            code += "  mov rdi, r13 # FILE* pointer\n"
+            code += "  call pclose # Returns exit status in RAX\n"
+            code += "  mov rcx, rax # Copy status to RCX\n"
+            
+            # Extract exit code from status
+            # In normal Unix wait status, the exit code is in the high byte
+            # Handle cases where command might have been terminated by a signal
+            code += "  shr rcx, 8 # Exit code in high byte, shift right\n"
+            code += "  and rcx, 0xFF # Mask to get just the exit code byte\n"
+            code += "  mov rax, rcx # Move to RAX as the return value\n"
+            
+            # End of exec function
+            code += f".Lexec_end_{exec_id}:\n"
+            
             return code
         elif node.name == "length":
             if len(node.arguments) != 1:

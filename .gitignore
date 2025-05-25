@@ -55,6 +55,7 @@ string_format
 string_idx
 listret
 publicprivate
+execterm
 
 # Logs
 *.log

@@ -20,6 +20,7 @@ pangy compile examples/string_idx.pgy -o string_idx
 pangy compile examples/string_format.pgy -o string_format
 pangy compile examples/listret.pgy -o listret
 pangy compile examples/publicprivate.pgy -o publicprivate
+pangy compile examples/execterm.pgy -o execterm
 
 echo "Running hello..."
 ./hello
@@ -87,6 +88,9 @@ echo "--------------------------------"
 echo "Running publicprivate..."
 ./publicprivate
 echo "--------------------------------"
+echo "Running execterm..."
+./execterm
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm
 rm ./*.txt

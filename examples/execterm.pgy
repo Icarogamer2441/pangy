@@ -1,0 +1,18 @@
+class Main {
+    def main() -> void {
+        exec("echo 'Hello, World!'", 0) // dont return the result or exit code
+        print("[-----------------------------------------------]")
+        exec("ls", 0)
+        exec("cd examples", 0)
+        print("[----------- Examples folder content -----------]")
+        exec("ls", 0)
+        exec("cd ..", 0)
+
+        var result string = exec("echo 'Hello, World!'", 1) // run the command on background and return the result
+        var exitCode int = exec("echo 'Hello, World!'", 2) // run the command on background and return the exit code
+        print("[----- Info of 'echo Hello, World!' command -----]")
+        show("Result: ", result) // prints with no new line (the result already has a new line)
+        print("Exit Code: ", exitCode)
+        print("[------------------------------------------------]")
+    }
+}
