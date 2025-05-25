@@ -290,6 +290,40 @@ class Main {
 }
 ```
 
+*   **Utility Functions (`utils`)**:
+    *   Mathematical utilities: `include utils.math.math_utils.MathUtils`
+        *   Provides functions like `min`, `max`, and `abs` for integer values.
+        *   Example:
+          ```pangy
+          include utils.math.math_utils.MathUtils
+
+          class Main {
+              def main() -> void {
+                  var math_utils MathUtils = MathUtils.new()
+                  print("min(5, 10): ", math_utils.min(5, 10))
+                  print("max(5, 10): ", math_utils.max(5, 10))
+                  print("abs(-5): ", math_utils.abs((-5)))
+              }
+          }
+          ```
+    *   String utilities: `include utils.str.string_utils.StringUtils`
+        *   Provides functions like `join`, `trim`, `startsWith`, and `endsWith` for string manipulation.
+        *   Example:
+          ```pangy
+          include utils.str.string_utils.StringUtils
+
+          class Main {
+              def main() -> void {
+                  var string_utils StringUtils = StringUtils.new()
+                  var words string[] = {"hello", "world"}
+                  print("join({\"hello\", \"world\"}, \" \"): ", string_utils.join(words, " "))
+                  print("trim(\"   hello   \"): |", string_utils.trim("   hello   "), "|")
+                  print("startsWith(\"hello\", \"he\"): ", string_utils.startsWith("hello", "he"))
+                  print("endsWith(\"world\", \"ld\"): ", string_utils.endsWith("world", "ld"))
+              }
+          }
+          ```
+
 ## Macro System
 
 Pangy supports macros at both global and class level. Macros allow for compile-time code generation.

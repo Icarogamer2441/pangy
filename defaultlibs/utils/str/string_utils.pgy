@@ -1,0 +1,121 @@
+class StringUtils {
+    // Joins a list of strings with a delimiter.
+    // Returns a single string.
+    def join(list string[], delimiter string) -> string {
+        var result string = ""
+        var list_len int = length(list)
+        var i int = 0
+
+        loop {
+            if (i >= list_len) {
+                stop
+            }
+            result = result + list[i]
+            if (i < list_len - 1) {
+                result = result + delimiter
+            }
+            i++
+        }
+        return result
+    }
+
+    // Removes leading and trailing whitespace from a string.
+    // Returns the trimmed string.
+    def trim(text string) -> string {
+        var start_index int = 0
+        var end_index int = length(text) - 1
+
+        // Trim leading whitespace
+        loop {
+            if (start_index >= length(text)) {
+                stop // Empty string or all whitespace
+            }
+            var char string = index(text, start_index)
+            if (char != " " && char != "\t" && char != "\n" && char != "\r") {
+                stop
+            }
+            start_index++
+        }
+
+        // Trim trailing whitespace
+        loop {
+            if (end_index < start_index) {
+                stop // All whitespace or empty string
+            }
+            var char string = index(text, end_index)
+            if (char != " " && char != "\t" && char != "\n" && char != "\r") {
+                stop
+            }
+            end_index--
+        }
+
+        // If start_index is beyond end_index, the string was all whitespace
+        if (start_index > end_index) {
+            return ""
+        }
+
+        // Return the substring with leading and trailing whitespace removed
+        return this:substring(text, start_index, end_index - start_index + 1)
+    }
+
+    // Checks if a string starts with a specific prefix.
+    def startsWith(text string, prefix string) -> bool {
+        var text_len int = length(text)
+        var prefix_len int = length(prefix)
+
+        if (prefix_len > text_len) {
+            return false
+        }
+
+        var i int = 0
+        loop {
+            if (i >= prefix_len) {
+                stop
+            }
+            if (index(text, i) != index(prefix, i)) {
+                return false
+            }
+            i++
+        }
+
+        return true
+    }
+
+    // Checks if a string ends with a specific suffix.
+    def endsWith(text string, suffix string) -> bool {
+        var text_len int = length(text)
+        var suffix_len int = length(suffix)
+
+        if (suffix_len > text_len) {
+            return false
+        }
+
+        var start_index_text int = text_len - suffix_len
+        var i int = 0
+
+        loop {
+            if (i >= suffix_len) {
+                stop
+            }
+            if (index(text, start_index_text + i) != index(suffix, i)) {
+                return false
+            }
+            i++
+        }
+
+        return true
+    }
+
+    def substring(text string, start int, count int) -> string {
+        var result string = ""
+        var i int = 0
+        loop {
+            if (i >= count) {
+                stop
+            }
+            result = result + index(text, start + i)
+            i++
+        }
+        return result
+    }
+} 

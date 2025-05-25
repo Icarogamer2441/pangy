@@ -7,7 +7,8 @@ from .parser_lexer import (
     TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
     TT_PLUSPLUS, TT_MINUSMINUS,
     TT_AMPERSAND, TT_PIPE, TT_CARET, TT_TILDE,
-    TT_LSHIFT, TT_RSHIFT, TT_URSHIFT
+    TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR,
+    TrueLiteralNode, FalseLiteralNode
 )
 # import itertools # Not strictly needed for current logic
 from types import SimpleNamespace # For getattr default
@@ -605,6 +606,10 @@ class Compiler:
     def visit_StringLiteralNode(self, node: StringLiteralNode, context):
         label = self.new_string_label(node.value)
         return f"  lea rax, {label}[rip] # Address of string literal\n"
+    def visit_TrueLiteralNode(self, node: TrueLiteralNode, context):
+        return f"  mov rax, 1 # True literal\n"
+    def visit_FalseLiteralNode(self, node: FalseLiteralNode, context):
+        return f"  mov rax, 0 # False literal\n"
     def visit_IdentifierNode(self, node: IdentifierNode, context):
         var_name = node.value
         if var_name in self.current_method_params:
@@ -618,6 +623,10 @@ class Compiler:
             # For now, we trust it's initialized if it exists in locals map and is being read.
             offset = local_info['offset_rbp']
             return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n"
+        elif isinstance(node, IntegerLiteralNode):
+            return "int"
+        elif isinstance(node, TrueLiteralNode) or isinstance(node, FalseLiteralNode):
+            return "bool" # Or could be "int" if booleans are treated as 0/1 integers
         # Add check for 'this' as an identifier if we ever support it as a standalone variable rather than keyword
         # else if var_name == 'this': # This would be if 'this' was a normal variable
         #     return self.visit_ThisNode(ThisNode(node.token), context) # Hacky way to reuse ThisNode logic
@@ -1989,7 +1998,60 @@ class Compiler:
         elif op_type == TT_EQUAL:
             op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for ==\n"
         elif op_type == TT_NOT_EQUAL:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for !=\n"
+            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for != \n"
+        elif op_type == TT_LOGICAL_AND: # &&
+            # Short-circuit AND: if left is false, result is false, don't eval right.
+            # Left operand is in RBX, Right operand is in RAX (after being evaluated)
+            # Actually, parse_BinaryOpNode evaluates left, pushes, then evaluates right.
+            # So when we get here, left is on stack, right is in RAX.
+            # Let's re-evaluate left first, then decide.
+            op_assembly = f"  # Logical AND (&&) at L{node.op_token.lineno}\n"
+            op_assembly += self.visit(node.left, context) # Left result in RAX
+            op_assembly += "  cmp rax, 0                   # Check if left is false (0)\n"
+            
+            false_label = f".L_logical_and_false_{node.op_token.lineno}_{self.next_if_label_id}"
+            end_label = f".L_logical_and_end_{node.op_token.lineno}_{self.next_if_label_id}"
+            self.next_if_label_id += 1
+
+            op_assembly += f"  je {false_label}             # If left is false, result is false\n"
+            
+            # Left is true, evaluate right expression
+            op_assembly += self.visit(node.right, context) # Right result in RAX
+            op_assembly += "  cmp rax, 0                   # Check if right is false (0)\n"
+            op_assembly += f"  je {false_label}             # If right is false, result is false\n"
+            
+            # Both are true
+            op_assembly += "  mov rax, 1                   # Result is true (1)\n"
+            op_assembly += f"  jmp {end_label}              # Jump to end\n"
+            
+            op_assembly += f"{false_label}:\n"
+            op_assembly += "  mov rax, 0                   # Result is false (0)\n"
+            op_assembly += f"{end_label}:\n"
+
+        elif op_type == TT_LOGICAL_OR: # ||
+            # Short-circuit OR: if left is true, result is true, don't eval right.
+            op_assembly = f"  # Logical OR (||) at L{node.op_token.lineno}\n"
+            op_assembly += self.visit(node.left, context) # Left result in RAX
+            op_assembly += "  cmp rax, 0                   # Check if left is false (0)\n"
+
+            true_label = f".L_logical_or_true_{node.op_token.lineno}_{self.next_if_label_id}"
+            end_label = f".L_logical_or_end_{node.op_token.lineno}_{self.next_if_label_id}"
+            self.next_if_label_id += 1
+
+            op_assembly += f"  jne {true_label}             # If left is true, result is true\n"
+
+            # Left is false, evaluate right expression
+            op_assembly += self.visit(node.right, context) # Right result in RAX
+            op_assembly += "  cmp rax, 0                   # Check if right is false (0)\n"
+            op_assembly += f"  jne {true_label}             # If right is true, result is true\n"
+
+            # Both are false
+            op_assembly += "  mov rax, 0                   # Result is false (0)\n"
+            op_assembly += f"  jmp {end_label}              # Jump to end\n"
+
+            op_assembly += f"{true_label}:\n"
+            op_assembly += "  mov rax, 1                   # Result is true (1)\n"
+            op_assembly += f"{end_label}:\n"
         else:
             raise CompilerError(f"Unsupported binary operator type '{node.op_token.type}' (op val: '{node.op}') at L{node.op_token.lineno}")
         return op_assembly
@@ -2134,61 +2196,64 @@ class Compiler:
         if_assembly = f"  # If statement at L{node.lineno}\n"
         else_label, end_if_label = self.new_if_labels()
         
-        # Check if the condition is a string comparison
-        is_string_comparison = False
-        if isinstance(node.condition, BinaryOpNode):
-            left_type = self.get_expr_type(node.condition.left, context)
-            right_type = self.get_expr_type(node.condition.right, context)
-            if left_type == "string" and right_type == "string":
-                is_string_comparison = True
+        # Step 1: Evaluate the condition.
+        # - For integer comparisons ( <, >, ==, etc. on numbers):
+        #   visit_BinaryOpNode will execute a CMP instruction, setting flags. RAX is not relevant for the condition outcome.
+        # - For string comparisons ( <, >, ==, etc. on strings):
+        #   visit_BinaryOpNode will call strcmp, result in RAX. We need to CMP RAX, 0.
+        # - For logical operations (&&, ||):
+        #   visit_BinaryOpNode will evaluate and put 0 or 1 in RAX. We need to CMP RAX, 0.
+        # - For other expressions (e.g., a variable, a function call):
+        #   visit_OtherExpression will put its value in RAX. We need to CMP RAX, 0 (0=false, non-zero=true).
         
         if_assembly += self.visit(node.condition, context)
+        
         jump_instruction = ""
         
-        # Check if condition has op_token (e.g., BinaryOpNode) before accessing it
-        if hasattr(node.condition, 'op_token'):
+        if isinstance(node.condition, BinaryOpNode):
             op_type = node.condition.op_token.type
             
-            if is_string_comparison:
-                # For string comparisons, the result of strcmp is in RAX
-                # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
-                if op_type == TT_LESS_THAN:
-                    jump_instruction = "jge" # Jump if RAX >= 0 (not less)
-                elif op_type == TT_GREATER_THAN:
-                    jump_instruction = "jle" # Jump if RAX <= 0 (not greater)
-                elif op_type == TT_LESS_EQUAL:
-                    jump_instruction = "jg"  # Jump if RAX > 0 (not less/equal)
-                elif op_type == TT_GREATER_EQUAL:
-                    jump_instruction = "jl"  # Jump if RAX < 0 (not greater/equal)
-                elif op_type == TT_EQUAL:
-                    jump_instruction = "jne" # Jump if RAX != 0 (not equal)
-                elif op_type == TT_NOT_EQUAL:
-                    jump_instruction = "je"  # Jump if RAX == 0 (equal)
-                else:
-                    raise CompilerError(f"Unsupported string comparison operator '{op_type}' in if. L{node.condition.op_token.lineno}")
+            is_string_comparison_op = False
+            if op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
+                left_type = self.get_expr_type(node.condition.left, context)
+                right_type = self.get_expr_type(node.condition.right, context)
+                if left_type == "string" and right_type == "string":
+                    is_string_comparison_op = True
+
+            if is_string_comparison_op:
+                # visit_BinaryOpNode for string comparison put strcmp result in RAX.
+                if_assembly += "  cmp rax, 0                   # Compare strcmp result with 0\n"
+                if op_type == TT_LESS_THAN: jump_instruction = "jge"    # True if rax < 0. Jump if !(rax < 0) => rax >= 0
+                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # True if rax > 0. Jump if !(rax > 0) => rax <= 0
+                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg"     # True if rax <= 0. Jump if !(rax <= 0) => rax > 0
+                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl"    # True if rax >= 0. Jump if !(rax >= 0) => rax < 0
+                elif op_type == TT_EQUAL: jump_instruction = "jne"    # True if rax == 0. Jump if rax != 0
+                elif op_type == TT_NOT_EQUAL: jump_instruction = "je"     # True if rax != 0. Jump if rax == 0
+            elif op_type in [TT_LOGICAL_AND, TT_LOGICAL_OR]:
+                # visit_BinaryOpNode for logical ops put 0 or 1 in RAX.
+                if_assembly += "  cmp rax, 0                   # Check if logical op result is false (0)\n"
+                jump_instruction = "jz"                         # Jump if false (RAX == 0)
+            elif op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_EQUAL, TT_NOT_EQUAL]:
+                # This is for INTEGER comparisons.
+                # visit_BinaryOpNode for these did `cmp rbx, rax`. Flags are set.
+                if op_type == TT_LESS_THAN: jump_instruction = "jge" # Jump if not less
+                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # Jump if not greater
+                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg" # Jump if greater
+                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl" # Jump if less
+                elif op_type == TT_EQUAL: jump_instruction = "jne" # Jump if not equal
+                elif op_type == TT_NOT_EQUAL: jump_instruction = "je" # Jump if equal
             else:
-                # For integer comparisons, we use the flags set by cmp instruction
-                if op_type == TT_LESS_THAN:
-                    jump_instruction = "jge"
-                elif op_type == TT_GREATER_THAN:
-                    jump_instruction = "jle"
-                elif op_type == TT_LESS_EQUAL:
-                    jump_instruction = "jg"
-                elif op_type == TT_GREATER_EQUAL:
-                    jump_instruction = "jl"
-                elif op_type == TT_EQUAL:
-                    jump_instruction = "jne"
-                elif op_type == TT_NOT_EQUAL:
-                    jump_instruction = "je"
-                else:
-                    raise CompilerError(f"Unsupported comparison operator '{node.condition.op_token.type}' in if. L{node.condition.op_token.lineno}")
+                # This case should not be hit if all BinaryOpNode types used in If conditions are handled above.
+                raise CompilerError(f"Unhandled BinaryOpNode type '{op_type}' as If condition at L{node.lineno}")
         else:
-            # For non-binary operations (like MethodCallNode), use a simple truthiness check
-            # If the value in RAX is non-zero, it's considered true
-            jump_instruction = "jz" # Jump if RAX is zero (false)
-        
+            # Condition is not a BinaryOpNode (e.g., a variable, function call, literal).
+            # Assume its truthiness (0 for false, non-zero for true) is in RAX after visit.
+            if_assembly += "  cmp rax, 0                   # Check if condition is false (0)\n"
+            jump_instruction = "jz"                         # Jump if false
+            
         jump_target = else_label if node.else_block else end_if_label
         if_assembly += f"  {jump_instruction} {jump_target}\n"
+        
         if_assembly += self.visit(node.then_block, context)
         if node.else_block:
             if_assembly += f"  jmp {end_if_label}\n"
@@ -2205,6 +2270,12 @@ class Compiler:
         # 3. Perform inc/dec on the memory location
 
         assembly_code = f"  # UnaryOp {node.op_token.type} on {type(node.operand_node)} at L{node.lineno}\n"
+
+        # Handle unary minus (-)
+        if node.op_token.type == TT_MINUS:
+            assembly_code += self.visit(node.operand_node, context) # Evaluate the operand (result in RAX)
+            assembly_code += "  neg rax      # Negate the value in RAX\n"
+            return assembly_code
 
         # Handle bitwise NOT (~)
         if node.op_token.type == TT_TILDE:
@@ -2240,8 +2311,9 @@ class Compiler:
         elif node.op_token.type == TT_MINUSMINUS:
             assembly_code += f"  dec {mem_operand}       # Decrement {var_name} in memory\n"
         else:
+            # This case should ideally not be reached with the checks above
             raise CompilerError(f"Unsupported unary operator: {node.op_token.type} at L{node.lineno}")
-        
+
         return assembly_code
 
     def visit_LoopNode(self, node: LoopNode, context):

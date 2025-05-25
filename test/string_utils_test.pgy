@@ -1,0 +1,49 @@
+include utils.str.string_utils.StringUtils
+
+class Main {
+    def main() -> void {
+        var string_utils StringUtils = StringUtils.new()
+
+        print("Testing StringUtils.join:")
+        var list1 string[] = {"hello", "world"}
+        var joined1 string = string_utils.join(list1, " ")
+        print("join({\"hello\", \"world\"}, \" \"): ", joined1, " (Expected: hello world)")
+
+        var list2 string[] = {"apple", "banana", "cherry"}
+        var joined2 string = string_utils.join(list2, "-")
+        print("join({\"apple\", \"banana\", \"cherry\"}, \"-\"): ", joined2, " (Expected: apple-banana-cherry)")
+
+        var list3 string[] = {"single"}
+        var joined3 string = string_utils.join(list3, ",")
+        print("join({\"single\"}, \",\"): ", joined3, " (Expected: single)")
+
+        print("\nTesting StringUtils.trim:")
+        var str1 string = "   hello world   "
+        var trimmed1 string = string_utils.trim(str1)
+        print("trim(\"   hello world   \"): |", trimmed1, "| (Expected: |hello world|)")
+
+        var str2 string = "\t\nleading and trailing\r\n"
+        var trimmed2 string = string_utils.trim(str2)
+        print("trim(\"\\t\\nleading and trailing\\r\\n\"): |", trimmed2, "| (Expected: |leading and trailing|)")
+
+        var str3 string = "no trim needed"
+        var trimmed3 string = string_utils.trim(str3)
+        print("trim(\"no trim needed\"): |", trimmed3, "| (Expected: |no trim needed|)")
+
+        var str4 string = "   "
+        var trimmed4 string = string_utils.trim(str4)
+        print("trim(\"   \"): |", trimmed4, "| (Expected: ||)")
+
+        print("\nTesting StringUtils.startsWith:")
+        print("startsWith(\"hello world\", \"hello\"): ", string_utils.startsWith("hello world", "hello"), " (Expected: true)")
+        print("startsWith(\"hello world\", \"world\"): ", string_utils.startsWith("hello world", "world"), " (Expected: false)")
+        print("startsWith(\"test\", \"testimony\"): ", string_utils.startsWith("test", "testimony"), " (Expected: false)")
+        print("startsWith(\"abc\", \"\"): ", string_utils.startsWith("abc", ""), " (Expected: true)")
+
+        print("\nTesting StringUtils.endsWith:")
+        print("endsWith(\"hello world\", \"world\"): ", string_utils.endsWith("hello world", "world"), " (Expected: true)")
+        print("endsWith(\"hello world\", \"hello\"): ", string_utils.endsWith("hello world", "hello"), " (Expected: false)")
+        print("endsWith(\"testimony\", \"test\"): ", string_utils.endsWith("testimony", "test"), " (Expected: false)")
+        print("endsWith(\"abc\", \"\"): ", string_utils.endsWith("abc", ""), " (Expected: true)")
+    }
+} 

@@ -21,6 +21,8 @@ pangy compile examples/string_format.pgy -o string_format
 pangy compile examples/listret.pgy -o listret
 pangy compile examples/publicprivate.pgy -o publicprivate
 pangy compile examples/execterm.pgy -o execterm
+pangy compile test/string_utils_test.pgy -o string_utils
+pangy compile test/math_utils_test.pgy -o math_utils
 
 echo "Running hello..."
 ./hello
@@ -91,6 +93,14 @@ echo "--------------------------------"
 echo "Running execterm..."
 ./execterm
 echo "--------------------------------"
+echo "========= TESTING UTILS ========="
+echo "--------------------------------"
+echo "Running string_utils..."
+./string_utils
+echo "--------------------------------"
+echo "Running math_utils..."
+./math_utils
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm string_utils math_utils
 rm ./*.txt

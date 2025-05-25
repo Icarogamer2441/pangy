@@ -73,6 +73,14 @@ TT_LSHIFT = 'LSHIFT'        # For '<<' (left shift)
 TT_RSHIFT = 'RSHIFT'        # For '>>' (right shift)
 TT_URSHIFT = 'URSHIFT'      # For '>>>' (unsigned right shift)
 
+# Tokens for logical operations
+TT_LOGICAL_AND = 'LOGICAL_AND' # For '&&'
+TT_LOGICAL_OR = 'LOGICAL_OR'   # For '||'
+
+# Boolean Literals
+TT_TRUE = 'TRUE'
+TT_FALSE = 'FALSE'
+
 class Token:
     def __init__(self, type, value, lineno=0, colno=0):
         self.type = type
@@ -151,6 +159,10 @@ class Lexer:
             return Token(TT_PUBLIC, 'public', self.lineno, start_col)
         elif result == 'private': # Added for private keyword
             return Token(TT_PRIVATE, 'private', self.lineno, start_col)
+        elif result == 'true':
+            return Token(TT_TRUE, True, self.lineno, start_col)
+        elif result == 'false':
+            return Token(TT_FALSE, False, self.lineno, start_col)
         else:
             return Token(TT_IDENTIFIER, result, self.lineno, start_col)
 
@@ -323,15 +335,21 @@ class Lexer:
             
             # Bitwise AND operator '&'
             if self.current_char == '&':
-                token = Token(TT_AMPERSAND, '&', self.lineno, start_col)
                 self.advance()
-                return token
+                if self.current_char == '&':
+                    self.advance()
+                    return Token(TT_LOGICAL_AND, '&&', self.lineno, start_col)
+                else:
+                    return Token(TT_AMPERSAND, '&', self.lineno, start_col)
                 
             # Bitwise OR operator '|'
             if self.current_char == '|':
-                token = Token(TT_PIPE, '|', self.lineno, start_col)
                 self.advance()
-                return token
+                if self.current_char == '|':
+                    self.advance()
+                    return Token(TT_LOGICAL_OR, '||', self.lineno, start_col)
+                else:
+                    return Token(TT_PIPE, '|', self.lineno, start_col)
                 
             # Bitwise XOR operator '^'
             if self.current_char == '^':
@@ -1072,7 +1090,25 @@ class Parser:
     # --- Expression Parsing (precedence: Comparison < Additive < Term) ---
     def parse_expression(self):
         # Entry point for parsing any expression
-        return self.parse_comparison_expression()
+        return self.parse_logical_or_expression()
+
+    def parse_logical_or_expression(self):
+        # logical_or_expression ::= logical_and_expression ( "||" logical_and_expression )*
+        node = self.parse_logical_and_expression()
+        while self.current_token.type == TT_LOGICAL_OR:
+            op_token = self.consume(TT_LOGICAL_OR)
+            right_node = self.parse_logical_and_expression()
+            node = BinaryOpNode(node, op_token, right_node)
+        return node
+
+    def parse_logical_and_expression(self):
+        # logical_and_expression ::= comparison_expression ( "&&" comparison_expression )*
+        node = self.parse_comparison_expression()
+        while self.current_token.type == TT_LOGICAL_AND:
+            op_token = self.consume(TT_LOGICAL_AND)
+            right_node = self.parse_comparison_expression()
+            node = BinaryOpNode(node, op_token, right_node)
+        return node
 
     def parse_comparison_expression(self):
         # comparison_expression ::= bitwise_expression ( (LT | GT | LE | GE | EQ | NE) bitwise_expression )*
@@ -1125,10 +1161,12 @@ class Parser:
         return node
         
     def parse_unary_expression(self):
-        # unary_expression ::= (TILDE)? term
-        if self.current_token.type == TT_TILDE:  # Bitwise NOT (~)
-            op_token = self.consume(TT_TILDE)
-            operand = self.parse_term()
+        # unary_expression ::= (MINUS | TILDE)? term
+        if self.current_token.type in (TT_MINUS, TT_TILDE):
+            op_token = self.current_token
+            self.advance()  # Consume '-' or '~'
+            # Parse the operand as a unary expression to handle things like - -5 or -~5
+            operand = self.parse_unary_expression()
             return UnaryOpNode(op_token, operand)
         return self.parse_term()
         
@@ -1273,6 +1311,12 @@ class Parser:
         elif token.type == TT_IDENTIFIER: # Could be a variable name
             self.consume(TT_IDENTIFIER)
             return IdentifierNode(token) # For now, an identifier by itself is just an identifier node
+        elif token.type == TT_TRUE:
+            self.consume(TT_TRUE)
+            return TrueLiteralNode(token)
+        elif token.type == TT_FALSE:
+            self.consume(TT_FALSE)
+            return FalseLiteralNode(token)
         elif token.type == TT_LPAREN:
             self.consume(TT_LPAREN)
             node = self.parse_expression()
@@ -1448,3 +1492,19 @@ if __name__ == '__main__':
     # The current parser requires an expression for `return`. This is fine.
     # If main has an implicit return, the compiler handles it.
     # If a void function has an explicit `return;`
+
+class TrueLiteralNode(ExprNode):
+    def __init__(self, token):
+        self.value = True
+        self.token = token
+
+    def __repr__(self):
+        return f"TrueLiteralNode(value=True)"
+
+class FalseLiteralNode(ExprNode):
+    def __init__(self, token):
+        self.value = False
+        self.token = token
+
+    def __repr__(self):
+        return f"FalseLiteralNode(value=False)"

@@ -1,0 +1,26 @@
+include utils.math.math_utils.MathUtils
+
+class Main {
+    def main() -> void {
+        var math_utils MathUtils = MathUtils.new()
+
+        print("Testing MathUtils.min:")
+        print("min(5, 10): ", math_utils.min(5, 10), " (Expected: 5)")
+        print("min(10, 5): ", math_utils.min(10, 5), " (Expected: 5)")
+        print("min(0, 0): ", math_utils.min(0, 0), " (Expected: 0)")
+        print("min(-5, 10): ", math_utils.min((-5), 10), " (Expected: -5)")
+        print("min(5, -10): ", math_utils.min(5, (-10)), " (Expected: -10)")
+
+        print("\nTesting MathUtils.max:")
+        print("max(5, 10): ", math_utils.max(5, 10), " (Expected: 10)")
+        print("max(10, 5): ", math_utils.max(10, 5), " (Expected: 10)")
+        print("max(0, 0): ", math_utils.max(0, 0), " (Expected: 0)")
+        print("max(-5, 10): ", math_utils.max((-5), 10), " (Expected: 10)")
+        print("max(5, -10): ", math_utils.max(5, (-10)), " (Expected: 5)")
+
+        print("\nTesting MathUtils.abs:")
+        print("abs(5): ", math_utils.abs(5), " (Expected: 5)")
+        print("abs(-5): ", math_utils.abs((-5)), " (Expected: 5)")
+        print("abs(0): ", math_utils.abs(0), " (Expected: 0)")
+    }
+} 

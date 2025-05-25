@@ -1,0 +1,26 @@
+class UnknownError {
+    def keyword(keyword string, gotkeyword string) -> void {
+        print("Unknown Keyword Error: Expected keyword '", keyword, "' but got '", gotkeyword, "'.")
+        exit(1)
+    }
+
+    def variable(variable string) -> void {
+        print("Unknown Variable Error: Variable '", variable, "' is not defined.")
+        exit(1)
+    }
+
+    def function(function string) -> void {
+        print("Unknown Function Error: Function '", function, "' is not defined.")
+        exit(1)
+    }
+
+    def type(type string) -> void {
+        print("Unknown Type Error: Type '", type, "' is not recognized.")
+        exit(1)
+    }
+
+    def operator(operator string) -> void {
+        print("Unknown Operator Error: Operator '", operator, "' is not recognized.")
+        exit(1)
+    }
+}
