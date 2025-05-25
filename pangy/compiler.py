@@ -506,9 +506,9 @@ class Compiler:
                 elif func_name == "open":  # open() returns file
                     format_string_parts.append("FILE*@%p")
                     format_types.append("pointer")
-                elif func_name == "index":  # index() returns int (ASCII value)
-                    format_string_parts.append("%d")
-                    format_types.append("int")
+                elif func_name == "index":  # index() now returns string
+                    format_string_parts.append("%s")
+                    format_types.append("string")
                 else:  # Default to %d for unknown functions
                     format_string_parts.append("%d")
                     format_types.append("int")
@@ -933,8 +933,20 @@ class Compiler:
             code += f".L_index_in_bounds_{node.name_token.lineno}_{index_label_id}:\n"
             code += "  mov rax, r12 # String pointer\n"
             code += "  add rax, r13 # Add index to get character address\n"
-            code += "  movzx rax, BYTE PTR [rax] # Load character (zero-extended to 64 bits)\n"
+            code += "  movzx rax, BYTE PTR [rax] # Load character ASCII value (zero-extended to 64 bits)\n"
             
+            # RAX holds the ASCII value of the character.
+            # Convert this to a 2-byte string (char + null).
+            code += "  # Convert char ASCII value in RAX to a 1-char string\n"
+            code += "  push rax             # Save ASCII value on stack\n"
+            code += "  mov rdi, 2           # Request 2 bytes for malloc (char + NULL)\n"
+            code += "  call malloc          # Allocate memory, new string ptr in RAX\n"
+            code += "  mov rbx, rax         # Save new string ptr in RBX\n"
+            code += "  pop rcx              # Restore ASCII value to RCX (cl is the byte)\n"
+            code += "  mov byte ptr [rbx], cl # Store the character\n"
+            code += "  mov byte ptr [rbx+1], 0  # Null-terminate the string\n"
+            code += "  mov rax, rbx         # Return new string ptr in RAX\n"
+
             return code
         elif node.name == "append":
             if len(node.arguments) != 2:
@@ -1613,6 +1625,8 @@ class Compiler:
             elif func_name == "to_int":
                 return "int"
             elif func_name == "read":
+                return "string"
+            elif func_name == "index": # index() now returns a string
                 return "string"
             elif func_name == "concat_int" or func_name == "concat_string":
                 # Special handling for common list-returning functions
