@@ -53,6 +53,7 @@ args
 bitandshifts
 string_format
 string_idx
+listret
 
 # Logs
 *.log

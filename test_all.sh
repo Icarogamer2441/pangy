@@ -18,6 +18,7 @@ pangy examples/args.pgy -o args
 pangy examples/bitandshifts.pgy -o bitandshifts
 pangy examples/string_idx.pgy -o string_idx
 pangy examples/string_format.pgy -o string_format
+pangy examples/listret.pgy -o listret
 
 echo "Running hello..."
 ./hello
@@ -79,5 +80,9 @@ echo "--------------------------------"
 echo "Running string_format..."
 ./string_format
 echo "--------------------------------"
+echo "Running listret..."
+./listret
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret
+rm ./*.txt

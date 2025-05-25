@@ -1,0 +1,197 @@
+class Main {
+    def main() -> void {
+        var list int[] = {1, 2, 3, 4, 5}
+        var list2 int[] = {6, 7, 8, 9, 10}
+
+        var list3 int[] = this:concat_int(list, list2)
+
+        var i int = 0
+
+        loop {
+            if (i >= length(list3)) {
+                stop
+            }
+
+            print("list3[", i, "]: ", list3[i])
+            i++
+        }
+
+        var list4 string[] = {"hello", "world", "this", "is", "a", "test"}
+        var list5 string[] = {"this", "is", "another", "test"}
+
+        var list6 string[] = this:concat_string(list4, list5)
+
+        i = 0
+
+        loop {
+            if (i >= length(list6)) {
+                stop
+            }
+
+            print("list6[", i, "]: ", list6[i])
+            i++
+        }
+
+        var matrix int[][] = {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}
+        var matrix2 int[][] = {{10, 11, 12}, {13, 14, 15}, {16, 17, 18}}
+
+        var matrix3 int[][] = this:concat_matrix_int(matrix, matrix2)
+
+        i = 0
+
+        loop {
+            if (i >= length(matrix3)) {
+                stop
+            }
+
+            var j int = 0
+
+            loop {
+                if (j >= length(matrix3[i])) {
+                    stop
+                }
+
+                print("matrix3[", i, "][", j, "]: ", matrix3[i][j])
+                j++
+            }
+            i++
+        }
+
+        var matrix4 string[][] = {{"hello", "world"}, {"this", "is", "a", "test"}}
+        var matrix5 string[][] = {{"this", "is", "another", "test"}}
+
+        var matrix6 string[][] = this:concat_matrix_string(matrix4, matrix5)
+
+        i = 0
+
+        loop {
+            if (i >= length(matrix6)) {
+                stop
+            }
+
+            var j int = 0
+
+            loop {
+                if (j >= length(matrix6[i])) {
+                    stop
+                }
+
+                print("matrix6[", i, "][", j, "]: ", matrix6[i][j])
+                j++
+            }
+            i++
+        }
+    }
+
+    def concat_int(a int[], b int[]) -> int[] {
+        var result int[] = {}
+
+        var i int = 0
+
+        loop {
+            if (i >= length(a)) {
+                stop
+            }
+
+            append(result, a[i])
+            i++
+        }
+
+        i = 0
+
+        loop {
+            if (i >= length(b)) {
+                stop
+            }
+
+            append(result, b[i])
+            i++
+        }
+
+        return result
+    }
+
+    def concat_string(a string[], b string[]) -> string[] {
+        var result string[] = {}
+
+        var i int = 0
+
+        loop {
+            if (i >= length(a)) {
+                stop
+            }
+
+            append(result, a[i])
+            i++
+        }
+
+        i = 0
+
+        loop {
+            if (i >= length(b)) {
+                stop
+            }
+
+            append(result, b[i])
+            i++
+        }
+
+        return result
+    }
+
+    def concat_matrix_int(a int[][], b int[][]) -> int[][] {
+        var result int[][] = {}
+
+        var i int = 0
+
+        loop {
+            if (i >= length(a)) {
+                stop
+            }
+
+            append(result, a[i])
+            i++
+        }
+
+        i = 0
+
+        loop {
+            if (i >= length(b)) {
+                stop
+            }
+
+            append(result, b[i])
+            i++
+        }
+
+        return result
+    }
+
+    def concat_matrix_string(a string[][], b string[][]) -> string[][] {
+        var result string[][] = {}
+
+        var i int = 0
+
+        loop {
+            if (i >= length(a)) {
+                stop
+            }
+
+            append(result, a[i])
+            i++
+        }
+
+        i = 0
+
+        loop {
+            if (i >= length(b)) {
+                stop
+            }
+
+            append(result, b[i])
+            i++
+        }
+
+        return result
+    }
+}

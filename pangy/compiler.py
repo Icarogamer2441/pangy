@@ -108,6 +108,9 @@ class Compiler:
         self.data_section_code = ".section .rodata\n"
         self.text_section_code = ".section .text\n"
         
+        # Store the program node for reference by other visitors
+        self.current_program_node = node
+        
         # Declare externs for GAS
         temp_externs = list(self.externs) # Use a copy in case self.externs is modified
         # Ensure essential externs like malloc, realloc, memcpy, strlen are present
@@ -160,7 +163,9 @@ class Compiler:
         method_label = f"{class_name}_{method_name}"
         epilogue_label = f".L_epilogue_{class_name}_{method_name}"
         self.current_method_params = {} 
-        self.current_method_locals = {} 
+        self.current_method_locals = {}
+        # Store method return type for later use in ReturnNode
+        self.current_method_return_type = node.return_type
         method_text_assembly = ""
         
         # Determine if method is static (based on AST node flag)
@@ -305,10 +310,13 @@ class Compiler:
 
         method_text_assembly += self.visit(node.body)
         method_text_assembly += f"{epilogue_label}:\n"
-        
-        if (is_entry_point_main or (node.is_static and node.name == "main")) and node.return_type == "void": 
+
+        # Add special handling for list/matrix return types
+        if node.return_type.endswith('[]') or node.return_type.endswith('[][]'):
+            method_text_assembly += f"  # Method returns {node.return_type}, pointer already in RAX\n"
+        elif (is_entry_point_main or (node.is_static and node.name == "main")) and node.return_type == "void":
             method_text_assembly += "  mov rax, 0 # Default return 0 for main\n"
-        
+
         method_text_assembly += "  mov rsp, rbp \n  pop rbp\n  ret\n\n"
         return method_text_assembly
 
@@ -465,7 +473,27 @@ class Compiler:
         class_name, method_name = context
         epilogue_label = f".L_epilogue_{class_name}_{method_name}"
         ret_assembly = f"  # Return statement at L{node.lineno}\n"
-        if node.expression: ret_assembly += self.visit(node.expression, context)
+        
+        # Get return type from current method context
+        return_type = None
+        for cls in getattr(self, 'current_program_node', ProgramNode([])).classes:
+            if cls.name.replace('.', '_') == class_name:
+                for method in cls.methods:
+                    if method.name == method_name:
+                        return_type = method.return_type
+                        break
+                if return_type:
+                    break
+        
+        # Generate code to evaluate the expression
+        if node.expression:
+            ret_assembly += self.visit(node.expression, context)
+            
+            # If we're returning a list or matrix (any array type), we need to ensure
+            # the pointer stays valid after returning from the function
+            if return_type and (return_type.endswith('[]') or return_type.endswith('[][]')):
+                ret_assembly += f"  # Returning {return_type} pointer in RAX\n"
+        
         ret_assembly += f"  jmp {epilogue_label}\n"
         return ret_assembly
 
@@ -1411,10 +1439,56 @@ class Compiler:
                 return "int"
             elif func_name == "read":
                 return "string"
+            elif func_name == "concat_int" or func_name == "concat_string":
+                # Special handling for common list-returning functions
+                return func_name.replace("concat_", "") + "[]"
+            elif func_name == "concat_matrix_int" or func_name == "concat_matrix_string":
+                # Special handling for common matrix-returning functions
+                return func_name.replace("concat_matrix_", "") + "[][]"
+        elif isinstance(node, MethodCallNode):
+            # Try to determine method return type
+            method_name = node.method_name
+            current_class_name = context[0] if context else None
+            
+            # Look for method in program AST
+            if hasattr(self, 'current_program_node'):
+                for cls in self.current_program_node.classes:
+                    cls_name = cls.name.replace('.', '_')
+                    
+                    # Check if this is the class we're looking for
+                    if isinstance(node.object_expr, ThisNode) and cls_name == current_class_name:
+                        # This is a this:method() call
+                        for method in cls.methods:
+                            if method.name == method_name:
+                                return method.return_type
+                    elif isinstance(node.object_expr, IdentifierNode):
+                        # This could be a Class.method() or obj.method() call
+                        obj_name = node.object_expr.value
+                        if cls_name == obj_name:
+                            # This is a Class.method() call
+                            for method in cls.methods:
+                                if method.name == method_name:
+                                    return method.return_type
+            
+            # Special case handling for common methods
+            if method_name == "concat_int" or method_name == "concat_string":
+                return method_name.replace("concat_", "") + "[]"
+            elif method_name == "concat_matrix_int" or method_name == "concat_matrix_string":
+                return method_name.replace("concat_matrix_", "") + "[][]"
         elif isinstance(node, ArrayAccessNode):
             # Added support for array access type detection
             element_type = self.get_array_element_type(node.array_expr, context)
             return element_type
+        elif isinstance(node, ListLiteralNode):
+            # Determine the type of the list elements
+            if node.elements:
+                element_type = self.get_expr_type(node.elements[0], context)
+                if element_type == "unknown":
+                    return "unknown[]"
+                else:
+                    return f"{element_type}[]"
+            else:
+                return "unknown[]"  # Empty list
         # Default for unknown/unhandled expressions
         return "unknown"
 
@@ -1846,6 +1920,8 @@ class Compiler:
         return code
 
     def compile(self, node: ProgramNode):
+        # Store the program node for reference
+        self.current_program_node = node
         return self.visit(node)
 
 if __name__ == '__main__':

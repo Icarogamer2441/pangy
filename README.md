@@ -242,6 +242,87 @@ class Main {
 }
 ```
 
+### Returning Lists and Matrices from Methods
+
+Pangy fully supports returning lists and matrices (multi-dimensional arrays) from methods. Method return types can be specified as `int[]`, `string[]`, `int[][]`, or `string[][]`.
+
+```pangy
+class ListUtils {
+    // Return a list of integers
+    def get_numbers() -> int[] {
+        var numbers int[] = {1, 2, 3, 4, 5}
+        return numbers
+    }
+    
+    // Return a list of strings
+    def get_words() -> string[] {
+        var words string[] = {"hello", "world"}
+        return words
+    }
+    
+    // Return a matrix (2D array) of integers
+    def get_matrix() -> int[][] {
+        var matrix int[][] = {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}
+        return matrix
+    }
+    
+    // Method to concatenate two lists
+    def concat(a int[], b int[]) -> int[] {
+        var result int[] = {}
+        
+        var i int = 0
+        loop {
+            if (i >= length(a)) {
+                stop
+            }
+            
+            append(result, a[i])
+            i++
+        }
+        
+        i = 0
+        loop {
+            if (i >= length(b)) {
+                stop
+            }
+            
+            append(result, b[i])
+            i++
+        }
+        
+        return result
+    }
+}
+
+class Main {
+    def main() -> void {
+        var utils ListUtils = ListUtils.new()
+        
+        // Get a list from a method
+        var numbers int[] = utils.get_numbers()
+        print("First number: ", numbers[0])
+        
+        // Concatenate two lists
+        var list1 int[] = {1, 2, 3}
+        var list2 int[] = {4, 5, 6}
+        var combined int[] = utils.concat(list1, list2)
+        
+        var i int = 0
+        loop {
+            if (i >= length(combined)) {
+                stop
+            }
+            print("combined[", i, "]: ", combined[i])
+            i++
+        }
+        
+        // Get a matrix from a method
+        var matrix int[][] = utils.get_matrix()
+        print("Matrix element [1][1]: ", matrix[1][1])  // Prints 5
+    }
+}
+```
+
 ### Accessing Elements
 
 List elements are accessed using zero-based indexing with square brackets `[]`.
