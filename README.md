@@ -1,6 +1,8 @@
 # Pangy Programming Language
 
-Pangy is a custom programming language implemented with a Python-based lexer, parser, and compiler that targets x86-64 assembly (GAS syntax).
+Pangy is a custom programming language implemented with a Python-based lexer, parser, and compiler that targets x86-64 assembly (GAS syntax). <br>
+
+<img src="icons/icon.svg">
 
 ## Features
 
