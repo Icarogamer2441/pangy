@@ -1,14 +1,22 @@
-from .parser_lexer import (
-    ASTNode, ProgramNode, ClassNode, MethodNode, BlockNode, PrintNode, Token,
-    ParamNode, IntegerLiteralNode, IdentifierNode, ThisNode,
-    MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, ReturnNode, StringLiteralNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode,
-    MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, ClassVarAccessNode,
-    TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL,
-    TT_PLUS, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT,
-    TT_PLUSPLUS, TT_MINUSMINUS,
-    TT_AMPERSAND, TT_PIPE, TT_CARET, TT_TILDE,
-    TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR,
-    TrueLiteralNode, FalseLiteralNode
+from .lexer import (
+    Lexer, Token,
+    TT_CLASS, TT_DEF, TT_IDENTIFIER, TT_LPAREN, TT_RPAREN, TT_LBRACE, TT_RBRACE, TT_ARROW, 
+    TT_TYPE, TT_STRING_LITERAL, TT_PRINT, TT_SEMICOLON, TT_EOF, TT_MACRO, TT_AT, 
+    TT_PUBLIC, TT_PRIVATE, TT_INT_LITERAL, TT_COMMA, TT_COLON, TT_DOUBLE_COLON, TT_PLUS, 
+    TT_RETURN, TT_THIS, TT_ASSIGN, TT_VAR, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT, 
+    TT_PLUSPLUS, TT_MINUSMINUS, TT_IF, TT_ELSE, TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
+    TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_STATIC, TT_DOT, TT_INCLUDE, 
+    TT_LOOP, TT_STOP, TT_LBRACKET, TT_RBRACKET, TT_AMPERSAND, TT_PIPE, TT_CARET, 
+    TT_TILDE, TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR, 
+    TT_TRUE, TT_FALSE
+)
+from .parser import (
+    Parser, ASTNode, ProgramNode, IncludeNode, ClassNode, ParamNode, MethodNode, 
+    BlockNode, PrintNode, ReturnNode, ExprNode, StringLiteralNode, IntegerLiteralNode, 
+    IdentifierNode, ThisNode, MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, 
+    IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode, MacroDefNode, MacroInvokeNode, 
+    ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, ClassVarAccessNode, TrueLiteralNode, 
+    FalseLiteralNode
 )
 # import itertools # Not strictly needed for current logic
 from types import SimpleNamespace # For getattr default
@@ -1458,17 +1466,20 @@ class Compiler:
             if len(node.arguments) != 1:
                 raise CompilerError(f"pop() expects exactly one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
             
-            # Use a unique ID for this pop call
+            # Use a unique ID for pop operations
             pop_id = self.next_pop_label_id
             self.next_pop_label_id += 1
             
-            code = f"  # pop(list) call at L{node.name_token.lineno}\n"
-            # Evaluate list pointer
-            code += self.visit(node.arguments[0], context) # List pointer in RAX
-            code += "  mov rdi, rax # List pointer for pop operation\n"
+            code = f"  # pop() call at L{node.name_token.lineno}\n"
             
-            # Check for null list
-            code += "  cmp rdi, 0 # Check for null list pointer\n"
+            # Evaluate list pointer (arg 0)
+            code += self.visit(node.arguments[0], context) # List pointer in RAX
+            
+            # Get list pointer in RDI
+            code += "  mov rdi, rax # List pointer in RDI\n"
+            
+            # Check if list_ptr (RDI) is null (meaning uninitialized list)
+            code += "  cmp rdi, 0 # Check for null list\n"
             code += f"  jne .L_pop_not_null_{pop_id}\n"
             
             # Handle null list error
@@ -1480,7 +1491,7 @@ class Compiler:
             
             code += f".L_pop_not_null_{pop_id}:\n"
             
-            # Check if list is empty
+            # Get list length and check if it's empty
             code += "  mov r12, QWORD PTR [rdi + 8] # r12 = length\n"
             code += "  cmp r12, 0 # Check if list is empty\n"
             code += f"  jne .L_pop_not_empty_{pop_id}\n"
@@ -1494,14 +1505,15 @@ class Compiler:
             
             code += f".L_pop_not_empty_{pop_id}:\n"
             
-            # Get last element's value
+            # Get the last element
+            code += "  mov r12, QWORD PTR [rdi + 8] # r12 = length\n"
             code += "  dec r12 # r12 = length - 1 (last element index)\n"
-            code += "  imul r13, r12, 8 # r13 = (length-1) * 8 (byte offset)\n"
+            code += "  imul r13, r12, 8 # r13 = last_index * 8 (offset in bytes)\n"
             code += "  add r13, 16 # r13 = header_size + element_offset\n"
-            code += "  mov rax, QWORD PTR [rdi + r13] # rax = list[length-1]\n"
             
-            # Save return value temporarily
-            code += "  push rax # Save the value to be returned\n"
+            # Get the value at the last element position
+            code += "  mov rax, QWORD PTR [rdi + r13] # rax = last element value\n"
+            code += "  push rax # Save the popped value to return later\n"
             
             # Update length
             code += "  mov QWORD PTR [rdi + 8], r12 # Update length = length - 1\n"
@@ -1509,6 +1521,172 @@ class Compiler:
             # Restore return value
             code += "  pop rax # Restore the popped value to return\n"
             
+            return code
+
+        elif node.name == "insert":
+            if len(node.arguments) != 3:
+                raise CompilerError(f"insert() expects three arguments (list, index, value), got {len(node.arguments)} at L{node.name_token.lineno}")
+            
+            # Use a unique ID for insert operations
+            if not hasattr(self, 'next_insert_label_id'):
+                self.next_insert_label_id = 0
+            insert_id = self.next_insert_label_id
+            self.next_insert_label_id += 1
+            
+            code = f"  # insert(list, index, value) call at L{node.name_token.lineno}\n"
+            
+            # Evaluate list pointer (arg 0)
+            code += self.visit(node.arguments[0], context) # List pointer in RAX
+            code += "  push rax # Save list_ptr on stack (as it might change due to realloc)\n"
+            
+            # Evaluate index (arg 1)
+            code += self.visit(node.arguments[1], context) # Index in RAX
+            code += "  push rax # Save index on stack\n"
+            
+            # Evaluate value (arg 2)
+            code += self.visit(node.arguments[2], context) # Value in RAX
+            code += "  push rax # Save value on stack\n"
+            
+            code += "  # --- INSERT IMPLEMENTATION ---\n"
+            code += "  pop rdx    # Value to insert is now in RDX\n"
+            code += "  pop rsi    # Index to insert at is now in RSI\n"
+            code += "  pop rdi    # List pointer is now in RDI\n"
+            
+            # Check if list_ptr (RDI) is null (meaning uninitialized list)
+            null_list_label = f".L_insert_null_list_{insert_id}"
+            not_null_list_label = f".L_insert_not_null_list_{insert_id}"
+            code += "  cmp rdi, 0 # Check for null list\n"
+            code += f"  je {null_list_label}\n"
+            
+            # List is not null, proceed with normal insert logic
+            code += f"{not_null_list_label}:\n"
+            code += "  mov r12, QWORD PTR [rdi]     # r12 = capacity = list_ptr[0]\n"
+            code += "  mov r13, QWORD PTR [rdi + 8] # r13 = length = list_ptr[1]\n"
+            
+            # Check if index is in bounds
+            code += "  cmp rsi, 0 # Check if index < 0\n"
+            code += f"  jl .L_insert_out_of_bounds_{insert_id}\n"
+            code += "  cmp rsi, r13 # Check if index > length\n"
+            code += f"  jg .L_insert_out_of_bounds_{insert_id}\n"
+            code += f"  jmp .L_insert_in_bounds_{insert_id}\n"
+            
+            # Handle out of bounds error
+            code += f".L_insert_out_of_bounds_{insert_id}:\n"
+            error_msg = self.new_string_label("Error: List insert index out of bounds.\n")
+            code += f"  lea rdi, {error_msg}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            # Insert within bounds
+            code += f".L_insert_in_bounds_{insert_id}:\n"
+            
+            # Check if we need to resize the list
+            code += "  cmp r13, r12 # if length >= capacity\n"
+            code += f"  jl .L_insert_has_space_{insert_id}\n"
+            
+            # No space, reallocate
+            code += "  # Need to resize list\n"
+            code += "  mov rax, r12 # current capacity in RAX\n"
+            code += "  test rax, rax # Check if capacity is 0\n"
+            code += f"  jnz .L_insert_double_cap_{insert_id}\n"
+            code += "  mov r12, 8 # If capacity was 0, set new capacity to 8\n"
+            code += f"  jmp .L_insert_set_new_cap_{insert_id}\n"
+            code += f".L_insert_double_cap_{insert_id}:\n"
+            code += "  shl r12, 1 # new_capacity = capacity * 2\n"
+            code += f".L_insert_set_new_cap_{insert_id}:\n"
+            
+            # Reallocate the list
+            code += "  push rsi # Save index (RSI) before realloc\n"
+            code += "  push rdx # Save value (RDX) before realloc\n"
+            code += "  mov rsi, r12 # rsi = new_capacity (for element storage)\n"
+            code += "  imul rsi, 8 # rsi = new_capacity * 8 (bytes for elements)\n"
+            code += "  add rsi, 16 # rsi = total new size (header + elements)\n"
+            # RDI still holds old list_ptr for realloc
+            code += "  call realloc # rax = realloc(old_list_ptr, total_new_size)\n"
+            code += "  pop rdx # Restore value (RDX)\n"
+            code += "  pop rsi # Restore index (RSI)\n"
+            code += "  mov rdi, rax # Update list_ptr with realloc result\n"
+            code += "  mov QWORD PTR [rdi], r12 # list_ptr[0] = new_capacity\n"
+            # R13 (length) is still correct
+            
+            # Now we have enough space for the insert
+            code += f".L_insert_has_space_{insert_id}:\n"
+            
+            # Save registers we'll need
+            code += "  push rdi # Save list pointer\n"
+            code += "  push rsi # Save index\n"
+            code += "  push rdx # Save value\n"
+            code += "  push r13 # Save length\n"
+            
+            # Shift elements to make room for the new one
+            # Start from the end of the list and move each element one position forward
+            code += "  mov rcx, r13 # rcx = length (counter for loop)\n"
+            code += "  cmp rcx, rsi # Compare length with insertion index\n"
+            code += f"  je .L_insert_no_shift_{insert_id} # If inserting at the end, no need to shift\n"
+            
+            # Need to shift elements
+            code += f".L_insert_shift_loop_{insert_id}:\n"
+            code += "  dec rcx # rcx = current position (starting from length-1 down to index)\n"
+            code += "  cmp rcx, rsi # Compare current position with insertion index\n"
+            code += f"  jl .L_insert_shift_done_{insert_id} # If we've gone past the index, we're done shifting\n"
+            
+            # Shift element at position rcx to position rcx+1
+            code += "  imul r8, rcx, 8 # r8 = current_pos * 8 (offset in bytes)\n"
+            code += "  add r8, 16 # r8 = header_size + element_offset for source\n"
+            code += "  mov r9, r8 # r9 = source offset\n"
+            code += "  add r9, 8 # r9 = destination offset (source + 8 bytes)\n"
+            code += "  mov r10, QWORD PTR [rdi + r8] # r10 = element value at current position\n"
+            code += "  mov QWORD PTR [rdi + r9], r10 # Move element one position forward\n"
+            
+            code += f"  jmp .L_insert_shift_loop_{insert_id} # Continue shifting loop\n"
+            
+            # Shifting done, now insert the new element
+            code += f".L_insert_shift_done_{insert_id}:\n"
+            code += f".L_insert_no_shift_{insert_id}:\n"
+            
+            # Restore saved registers
+            code += "  pop r13 # Restore length\n"
+            code += "  pop rdx # Restore value\n"
+            code += "  pop rsi # Restore index\n"
+            code += "  pop rdi # Restore list pointer\n"
+            
+            # Insert the value at the specified index
+            code += "  imul r8, rsi, 8 # r8 = index * 8 (offset in bytes)\n"
+            code += "  add r8, 16 # r8 = header_size + element_offset\n"
+            code += "  mov QWORD PTR [rdi + r8], rdx # list_ptr[index] = value\n"
+            
+            # Increment length
+            code += "  inc r13 # length++\n"
+            code += "  mov QWORD PTR [rdi + 8], r13 # list_ptr[1] = new_length\n"
+            
+            # Return the (potentially new) list pointer in RAX
+            code += "  mov rax, rdi # Return list_ptr in RAX\n"
+            code += f"  jmp .L_insert_end_{insert_id}\n"
+            
+            # Handle null list case: allocate initial list
+            code += f"{null_list_label}:\n"
+            code += "  # Create a new list for null list case\n"
+            code += "  mov r12, 8 # Initial capacity = 8\n"
+            code += "  mov r13, 0 # Initial length = 0\n"
+            code += "  push rsi # Save index (RSI) before malloc\n"
+            code += "  push rdx # Save value (RDX) before malloc\n"
+            code += "  mov rdi, r12 # rdi = capacity (for element storage)\n"
+            code += "  imul rdi, 8 # rdi = capacity * 8 (bytes for elements)\n"
+            code += "  add rdi, 16 # rdi = total size for malloc (header + elements)\n"
+            code += "  call malloc # rax = new_list_ptr\n"
+            code += "  pop rdx # Restore value (RDX)\n"
+            code += "  pop rsi # Restore index (RSI)\n"
+            code += "  mov rdi, rax # list_ptr = new_list_ptr\n"
+            code += "  mov QWORD PTR [rdi], r12 # list_ptr[0] = capacity\n"
+            code += "  mov QWORD PTR [rdi + 8], r13 # list_ptr[1] = length (still 0)\n"
+            
+            # Check index bounds for new list (should be 0)
+            code += "  cmp rsi, 0 # For a new list, the only valid index is 0\n"
+            code += f"  je .L_insert_in_bounds_{insert_id}\n"
+            code += f"  jmp .L_insert_out_of_bounds_{insert_id}\n"
+            
+            code += f".L_insert_end_{insert_id}:\n"
             return code
 
         elif node.name == "open":
@@ -2364,7 +2542,9 @@ class Compiler:
         elif isinstance(node.target, ArrayAccessNode):
             # Array element assignment: myList[idx] = ...
             array_access_node = node.target
-            
+            assign_array_access_id = self.next_array_access_id  # Use a unique ID
+            self.next_array_access_id += 1
+
             # 1. Evaluate array expression (list_ptr)
             code += self.visit(array_access_node.array_expr, context) # list_ptr in RAX
             code += "  push rax # Save list_ptr\n"
@@ -2374,6 +2554,41 @@ class Compiler:
             code += "  mov rbx, rax # Index in RBX\n"
             
             code += "  pop rax    # list_ptr back in RAX\n"
+            # RHS value is already on stack, will be popped into RCX later
+
+            # Bounds check
+            idx_ok_label = f".L_assign_idx_ok_{assign_array_access_id}"
+            idx_err_label = f".L_assign_idx_err_{assign_array_access_id}"
+            null_ptr_err_label = f".L_assign_null_ptr_err_{assign_array_access_id}"
+
+            # Check for null list pointer
+            code += "  cmp rax, 0 # Check for null pointer \n"
+            code += f"  je {null_ptr_err_label}\n" # Jump to null pointer error if rax is 0
+
+            code += "  mov rcx, QWORD PTR [rax + 8] # length in RCX\n"
+            code += "  cmp rbx, 0                   # if index < 0\n"
+            code += f"  jl {idx_err_label}           # jump to error\n"
+            code += "  cmp rbx, rcx                 # if index >= length\n"
+            code += f"  jge {idx_err_label}          # jump to error\n"
+            code += f"  jmp {idx_ok_label}         # Index is OK\n"
+
+            code += f"{null_ptr_err_label}:\n"
+            error_msg_null = self.new_string_label("Error: Null pointer access during array assignment.\n")
+            code += f"  lea rdi, {error_msg_null}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            
+            code += f"{idx_err_label}:\n"
+            error_msg_bounds = self.new_string_label("Error: Array index out of bounds during assignment.\n")
+            code += f"  lea rdi, {error_msg_bounds}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+
+            code += f"{idx_ok_label}:\n"
+            # rax = list_ptr, rbx = index
+            # RHS value is still on the stack
             code += "  pop rcx    # RHS value in RCX (from first push rax)\n"
 
             # Calculate address: list_ptr + 16 (header) + (index * 8)

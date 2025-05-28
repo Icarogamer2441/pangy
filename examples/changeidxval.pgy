@@ -1,0 +1,32 @@
+// you will need to install the defaultlibs to run this
+include listlib.listprint.ListPrint
+
+class Main {
+    def main() -> void {
+        var mylist string[] = {"Hello", "Hey"}
+        var printer ListPrint = ListPrint.new()
+
+        printer.print_str(mylist)
+
+        mylist[1] = "world!"
+
+        printer.print_str(mylist)
+
+        var mylist2 int[] = {3, 2, 4}
+
+        printer.print_int(mylist2)
+
+        mylist2[0] = 1
+        mylist2[2] = 3
+
+        printer.print_int(mylist2)
+
+        var mymatrix string[][][] = {{"A", "C", "C"}}
+
+        printer.print_str(mymatrix[0])
+
+        mymatrix[0][1] = "B"
+
+        printer.print_str(mymatrix[0])
+    }
+}

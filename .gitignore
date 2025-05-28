@@ -58,6 +58,8 @@ publicprivate
 execterm
 string_utils
 math_utils
+changeidxval
+insert
 
 # Logs
 *.log

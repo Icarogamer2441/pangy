@@ -2,7 +2,8 @@ import argparse
 import os
 import subprocess
 import shutil # Added for library installation
-from .parser_lexer import Lexer, Parser, ProgramNode
+from .lexer import Lexer
+from .parser import Parser, ProgramNode
 from .compiler import Compiler
 
 # Directory for globally installed Pangy libraries

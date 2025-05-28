@@ -64,19 +64,13 @@ Pangy is a custom programming language implemented with a Python-based lexer, pa
 
 1.  **Run the Compiler**:
     ```bash
-    python -m pangy.compiler your_source_file.pgy
+    pangy compile your_source_file.pgy -o output_name
     ```
     This will generate an assembly file (e.g., `output.s`).
 
-2.  **Assemble and Link**:
-    ```bash
-    gcc -no-pie output.s -o your_program_name
-    ```
-    (Replace `output.s` with the actual name of your generated assembly file, and `your_program_name` with your desired executable name).
-
 3.  **Run the Executable**:
     ```bash
-    ./your_program_name
+    ./output_name
     ```
 
 ### Example `hello.pgy`

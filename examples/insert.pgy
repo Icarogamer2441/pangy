@@ -1,0 +1,26 @@
+include listlib.listprint.ListPrint
+
+class Main {
+    def main() -> void {
+        var mylist string[] = {"World!"}
+        var printer ListPrint = ListPrint.new()
+
+        printer.print_str(mylist)
+
+        insert(mylist, 0, "Hello")
+        insert(mylist, 1, ",")
+
+        printer.print_str(mylist)
+
+        var mymatrix string[][] = {{"World"}}
+
+        insert(mymatrix[0], 0, "Hello,")
+
+        insert(mymatrix, 0, {"Hey", "!"})
+
+        print("mymatrix[0]:")
+        printer.print_str(mymatrix[0])
+        print("mymatrix[1]:")
+        printer.print_str(mymatrix[1])
+    }
+}

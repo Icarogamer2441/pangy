@@ -23,6 +23,8 @@ pangy compile examples/publicprivate.pgy -o publicprivate
 pangy compile examples/execterm.pgy -o execterm
 pangy compile test/string_utils_test.pgy -o string_utils
 pangy compile test/math_utils_test.pgy -o math_utils
+pangy compile examples/changeidxval.pgy -o changeidxval
+pangy compile examples/insert.pgy -o insert
 
 echo "Running hello..."
 ./hello
@@ -101,6 +103,12 @@ echo "--------------------------------"
 echo "Running math_utils..."
 ./math_utils
 echo "--------------------------------"
+echo "Running changeidxval..."
+./changeidxval
+echo "--------------------------------"
+echo "Running insert..."
+./insert
+echo "--------------------------------"
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm string_utils math_utils
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm string_utils math_utils changeidxval insert
 rm ./*.txt
