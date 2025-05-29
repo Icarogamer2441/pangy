@@ -40,4 +40,24 @@ class ListPrint {
         final_format_ints = final_format_ints + "}"
         print(final_format_ints)
     }
+
+    def print_float(list_float float[]) -> void {
+        var i int = 1
+        var list_len int = length(list_float)
+        var final_format_floats string = ""
+        if (list_len == 0) {
+            print("Empty list")
+            return 0
+        }
+        final_format_floats = "{" + to_stringf(list_float[0])
+        loop {
+            if (i >= list_len) {
+                stop
+            }
+            final_format_floats = final_format_floats + ", " + to_stringf(list_float[i])
+            i++
+        }
+        final_format_floats = final_format_floats + "}"
+        print(final_format_floats)
+    }
 }

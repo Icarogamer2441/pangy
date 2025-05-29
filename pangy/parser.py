@@ -8,6 +8,7 @@ from .lexer import (
     TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_STATIC, TT_DOT, TT_INCLUDE, 
     TT_LOOP, TT_STOP, TT_LBRACKET, TT_RBRACKET, TT_AMPERSAND, TT_PIPE, TT_CARET, 
     TT_TILDE, TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR, 
+    TT_FLOAT_LITERAL,
     TT_TRUE, TT_FALSE
 )
 
@@ -110,8 +111,16 @@ class IntegerLiteralNode(ExprNode):
 
     def __repr__(self):
         return f"IntegerLiteralNode(value={self.value})"
-        
-class IdentifierNode(ExprNode): # For variable names, method names (in some contexts)
+
+class FloatLiteralNode(ExprNode):
+    def __init__(self, token):
+        self.value = token.value
+        self.token = token
+
+    def __repr__(self):
+        return f"FloatLiteralNode(value={self.value})"
+
+class IdentifierNode(ExprNode):
     def __init__(self, token):
         self.value = token.value
         self.token = token
@@ -867,6 +876,9 @@ class Parser:
         if token.type == TT_INT_LITERAL:
             self.consume(TT_INT_LITERAL)
             return IntegerLiteralNode(token)
+        elif token.type == TT_FLOAT_LITERAL:
+            self.consume(TT_FLOAT_LITERAL)
+            return FloatLiteralNode(token)
         elif token.type == TT_STRING_LITERAL:
             self.consume(TT_STRING_LITERAL)
             return StringLiteralNode(token)

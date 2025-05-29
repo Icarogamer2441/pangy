@@ -1,0 +1,32 @@
+class Main {
+    def main() -> void {
+        print("===== Float conversion tests =====")
+        
+        // Basic float values
+        var pi float = 3.14159
+        var e float = 2.71828
+        
+        print("Pi = ", pi)
+        print("e = ", e)
+        
+        // Test to_stringf() - convert float to string
+        var pi_str string = to_stringf(pi)
+        print("Pi as string: ", pi_str)
+        
+        // Test to_intf() - convert float to int (truncates decimal part)
+        var pi_int int = to_intf(pi)
+        print("Pi as int: ", pi_int)  // Should be 3
+        
+        // Test with string concatenation
+        print("String + float: Pi = ", to_stringf(pi))
+        
+        // Test with arithmetic
+        var sum float = pi + e
+        print("Pi + e = ", sum)
+        print("(Pi + e) as int: ", to_intf(sum))
+        
+        // More complex tests
+        var mult float = pi * 2.0
+        print("Pi * 2 = ", mult)
+    }
+} 

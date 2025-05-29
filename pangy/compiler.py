@@ -13,10 +13,10 @@ from .lexer import (
 from .parser import (
     Parser, ASTNode, ProgramNode, IncludeNode, ClassNode, ParamNode, MethodNode, 
     BlockNode, PrintNode, ReturnNode, ExprNode, StringLiteralNode, IntegerLiteralNode, 
-    IdentifierNode, ThisNode, MethodCallNode, FunctionCallNode, BinaryOpNode, UnaryOpNode, 
-    IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode, MacroDefNode, MacroInvokeNode, 
-    ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, ClassVarAccessNode, TrueLiteralNode, 
-    FalseLiteralNode
+    FloatLiteralNode, IdentifierNode, ThisNode, MethodCallNode, FunctionCallNode, 
+    BinaryOpNode, UnaryOpNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode, 
+    MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, 
+    ClassVarAccessNode, TrueLiteralNode, FalseLiteralNode
 )
 # import itertools # Not strictly needed for current logic
 from types import SimpleNamespace # For getattr default
@@ -42,6 +42,8 @@ class Compiler:
         self.next_to_int_id = 0 # For to_int function labels
         self.next_to_string_id = 0 # For to_string function labels
         self.next_input_id = 0 # For input function labels
+        self.next_float_label_id = 0 # For float literal labels
+        self.next_class_var_id = 0 # For class variable access operations
         self.externs = ["printf", "exit", "scanf", "atoi", "malloc", "fopen", "fclose", "fwrite", "fread", "fgets", "realloc", "memcpy", "strlen", "strcpy", "strcat", "system", "popen", "pclose", "free", "chdir"] # Added chdir
         
         self.current_method_params = {}
@@ -93,6 +95,13 @@ class Compiler:
         escaped_for_asciz = escaped_for_asciz.replace('\'', '\\\'')
         
         self.data_section_code += f'{label}:\n  .asciz "{escaped_for_asciz}"\n'
+        return label
+
+    def new_float_literal_label(self, value):
+        # Create a unique label for a float literal and emit it as a double in .rodata
+        label = f".LCF{self.next_float_label_id}"
+        self.next_float_label_id += 1
+        self.data_section_code += f"{label}:\n  .double {value}\n"
         return label
 
     def new_if_labels(self):
@@ -448,6 +457,9 @@ class Compiler:
                     if node_type_for_print == 'string':
                         format_string_parts.append("%s")
                         format_types.append("string")
+                    elif node_type_for_print == 'float':
+                        format_string_parts.append("%g")  # %g for float/double
+                        format_types.append("float")
                     else:
                         format_string_parts.append("%d")
                         format_types.append("int")
@@ -459,6 +471,10 @@ class Compiler:
                 format_string_parts.append("%d")
                 arg_expr_nodes.append(expr)
                 format_types.append("int")
+            elif isinstance(expr, FloatLiteralNode):
+                format_string_parts.append("%g")  # %g for float/double
+                arg_expr_nodes.append(expr)
+                format_types.append("float")
             elif isinstance(expr, IdentifierNode):
                 # Determine type of identifier to use %s or %d
                 var_name = expr.value
@@ -475,6 +491,9 @@ class Compiler:
                     # For file pointers, print as pointer value
                     format_string_parts.append("FILE*@%p")
                     format_types.append("pointer")
+                elif var_type == 'float':
+                    format_string_parts.append("%g")  # %g for float/double
+                    format_types.append("float")
                 # Add check for list types - printing a list variable directly prints its address (pointer)
                 elif var_type.endswith("[]"):
                     format_string_parts.append("%p") # Print list pointer address
@@ -493,6 +512,9 @@ class Compiler:
                 elif element_type_for_print == 'file': # If we ever have file[] and print file[i]
                     format_string_parts.append("FILE*@%p")
                     format_types.append("pointer")
+                elif element_type_for_print == 'float':
+                    format_string_parts.append("%g")  # %g for float/double
+                    format_types.append("float")
                 else: # Default to %d for int[], int, or other/unknown element types
                     format_string_parts.append("%d")
                     format_types.append("int")
@@ -504,6 +526,9 @@ class Compiler:
                 if var_type == 'string':
                     format_string_parts.append("%s")
                     format_types.append("string")
+                elif var_type == 'float':
+                    format_string_parts.append("%g")  # %g for float/double
+                    format_types.append("float")
                 else: # Default to %d for int or unknown/other types
                     format_string_parts.append("%d")
                     format_types.append("int")
@@ -520,6 +545,12 @@ class Compiler:
                 elif func_name == "to_string":  # to_string() returns string
                     format_string_parts.append("%s")
                     format_types.append("string")
+                elif func_name == "to_stringf":  # to_stringf() returns string
+                    format_string_parts.append("%s")
+                    format_types.append("string")
+                elif func_name == "to_intf":  # to_intf() returns int
+                    format_string_parts.append("%d")
+                    format_types.append("int")
                 elif func_name == "open":  # open() returns file
                     format_string_parts.append("FILE*@%p")
                     format_types.append("pointer")
@@ -536,6 +567,9 @@ class Compiler:
                 if node_type_for_print == 'string':
                     format_string_parts.append("%s")
                     format_types.append("string")
+                elif node_type_for_print == 'float':
+                    format_string_parts.append("%g")  # %g for float/double
+                    format_types.append("float")
                 else:
                     format_string_parts.append("%d")
                     format_types.append("int")
@@ -558,10 +592,23 @@ class Compiler:
         format_label = self.new_printf_format_label(format_string)
         printf_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
         num_val_args = len(arg_expr_nodes)
+        
+        # Track how many float arguments we have for printf's vararg handling
+        float_arg_count = 0
+        for ft in format_types:
+            if ft == "float":
+                float_arg_count += 1
+        
         if num_val_args > (len(printf_arg_regs) -1) :
             for i in range(num_val_args - 1, (len(printf_arg_regs) -1) - 1, -1):
                 print_assembly += self.visit(arg_expr_nodes[i], context)
-                print_assembly += "  push rax # Push printf stack argument\n"
+                # For float args beyond the first 6 args, need to push the xmm register content
+                if i < len(format_types) and format_types[i] == "float":
+                    print_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
+                    print_assembly += "  movsd [rsp], xmm0      # Store float argument\n"
+                else:
+                    print_assembly += "  push rax # Push printf stack argument\n"
+                    
         for i in range(min(num_val_args, len(printf_arg_regs)-1) - 1, -1, -1):
             print_assembly += self.visit(arg_expr_nodes[i], context)
             target_reg = printf_arg_regs[i+1]
@@ -570,11 +617,21 @@ class Compiler:
             if i < len(format_types) and format_types[i] == "char":
                 # For %c, we need to ensure only the low byte is used
                 print_assembly += f"  movzx {target_reg}, al # Load character (zero-extended) into {target_reg}\n"
+            # Special handling for float format (%g)
+            elif i < len(format_types) and format_types[i] == "float":
+                # For %g, the float value is already in xmm0, and needs to stay there
+                # In x86-64 ABI, floating point args go in xmm0-xmm7
+                # We don't need to do anything here, as the value is already in the right register (xmm0)
+                # Each xmm register corresponds to the argument position
+                xmm_reg = f"xmm{i}"
+                if i > 0:  # Only move if not already in xmm0
+                    print_assembly += f"  movsd {xmm_reg}, xmm0  # Move float to {xmm_reg} for arg {i+1}\n"
             else:
                 print_assembly += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
                 
         print_assembly += f"  lea {printf_arg_regs[0]}, {format_label}[rip] # Format string for printf\n"
-        print_assembly += "  mov rax, 0 # Num SSE registers for variadic call\n"
+        # For printf with floating point args, RAX must contain the number of vector (xmm) registers used
+        print_assembly += f"  mov rax, {float_arg_count} # Number of float/vector args for printf\n"
         print_assembly += "  call printf\n"
         if num_val_args > (len(printf_arg_regs) -1):
             bytes_pushed = (num_val_args - (len(printf_arg_regs) -1)) * 8
@@ -601,9 +658,12 @@ class Compiler:
         if node.expression:
             ret_assembly += self.visit(node.expression, context)
             
-            # If we're returning a list or matrix (any array type), we need to ensure
-            # the pointer stays valid after returning from the function
-            if return_type and (return_type.endswith('[]') or return_type.endswith('[][]')):
+            # Handle special return types
+            if return_type == "float":
+                # For float returns, the value is already in XMM0 (no need to do anything)
+                ret_assembly += "  # Float return value is already in XMM0\n"
+            # For list or matrix returns
+            elif return_type and (return_type.endswith('[]') or return_type.endswith('[][]')):
                 ret_assembly += f"  # Returning {return_type} pointer in RAX\n"
         
         ret_assembly += f"  jmp {epilogue_label}\n"
@@ -611,6 +671,12 @@ class Compiler:
 
     def visit_IntegerLiteralNode(self, node: IntegerLiteralNode, context):
         return f"  mov rax, {node.value} # Integer literal {node.value}\n"
+    def visit_FloatLiteralNode(self, node: 'FloatLiteralNode', context):
+        # Load float literal into XMM0
+        label = self.new_float_literal_label(node.value)
+        code = f"  lea rax, {label}[rip] # Address of float literal {node.value}\n"
+        code += f"  movsd xmm0, [rax] # Load double {node.value} into xmm0\n"
+        return code
     def visit_StringLiteralNode(self, node: StringLiteralNode, context):
         label = self.new_string_label(node.value)
         return f"  lea rax, {label}[rip] # Address of string literal\n"
@@ -623,21 +689,31 @@ class Compiler:
         if var_name in self.current_method_params:
             param_info = self.current_method_params[var_name]
             offset = param_info['offset_rbp']
-            return f"  mov rax, QWORD PTR [rbp {offset}] # Param {var_name} from [rbp{offset}]\n"
+            
+            # Check if this is a float variable
+            if 'type' in param_info and param_info['type'] == 'float':
+                # For float variables, load the value into XMM0
+                return f"  mov rax, QWORD PTR [rbp {offset}] # Param {var_name} from [rbp{offset}]\n" + \
+                       f"  movq xmm0, rax # Move float value to XMM0\n"
+            else:
+                return f"  mov rax, QWORD PTR [rbp {offset}] # Param {var_name} from [rbp{offset}]\n"
+        
         elif var_name in self.current_method_locals:
             local_info = self.current_method_locals[var_name]
-            # Assuming type checking/initialization is handled/guaranteed by VarDeclNode or semantic analysis.
-            # If read-before-write was a concern at runtime for uninitialized vars, a check could be added.
-            # For now, we trust it's initialized if it exists in locals map and is being read.
             offset = local_info['offset_rbp']
-            return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n"
+            
+            # Check if this is a float variable
+            if 'type' in local_info and local_info['type'] == 'float':
+                # For float variables, load the value into XMM0
+                return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n" + \
+                       f"  movq xmm0, rax # Move float value to XMM0\n"
+            else:
+                return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n"
+        
         elif isinstance(node, IntegerLiteralNode):
             return "int"
         elif isinstance(node, TrueLiteralNode) or isinstance(node, FalseLiteralNode):
             return "bool" # Or could be "int" if booleans are treated as 0/1 integers
-        # Add check for 'this' as an identifier if we ever support it as a standalone variable rather than keyword
-        # else if var_name == 'this': # This would be if 'this' was a normal variable
-        #     return self.visit_ThisNode(ThisNode(node.token), context) # Hacky way to reuse ThisNode logic
 
         raise CompilerError(f"Undefined identifier '{var_name}' at L{node.token.lineno}. Only params and declared local vars supported.")
 
@@ -665,16 +741,21 @@ class Compiler:
 
         local_info = self.current_method_locals[var_name]
         var_offset_rbp = local_info['offset_rbp']
-        var_type_str = local_info['type'] # e.g., "int", "int[]"
+        var_type_str = local_info['type'] # e.g., "int", "int[]", "float"
 
         decl_assembly = f"  # Variable Declaration: {var_name} ({var_type_str}) at L{node.lineno}\n"
         
         # 1. Evaluate the right-hand side expression (initialization value)
         #    This will handle ListLiteralNode if used for initialization.
-        decl_assembly += self.visit(node.expression, context) # Result will be in RAX
+        decl_assembly += self.visit(node.expression, context) # Result will be in RAX or XMM0 for floats
         
-        # 2. Store the result from RAX into the variable's pre-allocated stack slot
-        decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX (pointer for lists) at [rbp{var_offset_rbp}]\n"
+        # 2. Store the result into the variable's pre-allocated stack slot
+        if var_type_str == "float":
+            # For float variables, store from XMM0
+            decl_assembly += f"  movq QWORD PTR [rbp {var_offset_rbp}], xmm0 # Initialize float {var_name} at [rbp{var_offset_rbp}]\n"
+        else:
+            # For other types, store from RAX
+            decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX (pointer for lists) at [rbp{var_offset_rbp}]\n"
 
         self.current_method_locals[var_name]['is_initialized'] = True # Mark as initialized
         return decl_assembly
@@ -937,7 +1018,7 @@ class Compiler:
             code = f"  # show() call at L{node.name_token.lineno}\n"
             format_string_parts = []
             arg_expr_nodes = []
-            format_types = [] # Track format type for each argument
+            format_types = []
 
             for i, expr in enumerate(node.arguments):
                 # Check for type conversion method calls (.as_string(), .as_int(), etc.)
@@ -957,6 +1038,9 @@ class Compiler:
                         if node_type_for_print == 'string':
                             format_string_parts.append("%s")
                             format_types.append("string")
+                        elif node_type_for_print == 'float':
+                            format_string_parts.append("%g")  # %g for float/double
+                            format_types.append("float")
                         else:
                             format_string_parts.append("%d")
                             format_types.append("int")
@@ -968,6 +1052,10 @@ class Compiler:
                     format_string_parts.append("%d")
                     arg_expr_nodes.append(expr)
                     format_types.append("int")
+                elif isinstance(expr, FloatLiteralNode):
+                    format_string_parts.append("%g")  # %g for float/double
+                    arg_expr_nodes.append(expr)
+                    format_types.append("float")
                 elif isinstance(expr, IdentifierNode):
                     # Determine type of identifier to use %s or %d
                     var_name = expr.value
@@ -984,6 +1072,9 @@ class Compiler:
                         # For file pointers, print as pointer value
                         format_string_parts.append("FILE*@%p")
                         format_types.append("pointer")
+                    elif var_type == 'float':
+                        format_string_parts.append("%g")  # %g for float/double
+                        format_types.append("float")
                     # Add check for list types - printing a list variable directly prints its address (pointer)
                     elif var_type.endswith("[]"):
                         format_string_parts.append("%p") # Print list pointer address
@@ -1002,6 +1093,9 @@ class Compiler:
                     elif element_type_for_print == 'file': # If we ever have file[] and print file[i]
                         format_string_parts.append("FILE*@%p")
                         format_types.append("pointer")
+                    elif element_type_for_print == 'float':
+                        format_string_parts.append("%g")  # %g for float/double
+                        format_types.append("float")
                     else: # Default to %d for int[], int, or other/unknown element types
                         format_string_parts.append("%d")
                         format_types.append("int")
@@ -1013,6 +1107,9 @@ class Compiler:
                     if var_type == 'string':
                         format_string_parts.append("%s")
                         format_types.append("string")
+                    elif var_type == 'float':
+                        format_string_parts.append("%g")  # %g for float/double
+                        format_types.append("float")
                     else: # Default to %d for int or unknown/other types
                         format_string_parts.append("%d")
                         format_types.append("int")
@@ -1029,6 +1126,12 @@ class Compiler:
                     elif func_name == "to_string":  # to_string() returns string
                         format_string_parts.append("%s")
                         format_types.append("string")
+                    elif func_name == "to_stringf":  # to_stringf() returns string
+                        format_string_parts.append("%s")
+                        format_types.append("string")
+                    elif func_name == "to_intf":  # to_intf() returns int
+                        format_string_parts.append("%d")
+                        format_types.append("int")
                     elif func_name == "open":  # open() returns file
                         format_string_parts.append("FILE*@%p")
                         format_types.append("pointer")
@@ -1045,6 +1148,9 @@ class Compiler:
                     if node_type_for_print == 'string':
                         format_string_parts.append("%s")
                         format_types.append("string")
+                    elif node_type_for_print == 'float':
+                        format_string_parts.append("%g")  # %g for float/double
+                        format_types.append("float")
                     else:
                         format_string_parts.append("%d")
                         format_types.append("int")
@@ -1067,10 +1173,23 @@ class Compiler:
             format_label = self.new_printf_format_label(format_string)
             printf_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
             num_val_args = len(arg_expr_nodes)
+            
+            # Track how many float arguments we have for printf's vararg handling
+            float_arg_count = 0
+            for ft in format_types:
+                if ft == "float":
+                    float_arg_count += 1
+                    
             if num_val_args > (len(printf_arg_regs) -1) :
                 for i in range(num_val_args - 1, (len(printf_arg_regs) -1) - 1, -1):
                     code += self.visit(arg_expr_nodes[i], context)
-                    code += "  push rax # Push printf stack argument\n"
+                    # For float args beyond the first 6 args, need to push the xmm register content
+                    if i < len(format_types) and format_types[i] == "float":
+                        code += "  sub rsp, 8             # Reserve space for float argument\n"
+                        code += "  movsd [rsp], xmm0      # Store float argument\n"
+                    else:
+                        code += "  push rax # Push printf stack argument\n"
+                        
             for i in range(min(num_val_args, len(printf_arg_regs)-1) - 1, -1, -1):
                 code += self.visit(arg_expr_nodes[i], context)
                 target_reg = printf_arg_regs[i+1]
@@ -1079,11 +1198,21 @@ class Compiler:
                 if i < len(format_types) and format_types[i] == "char":
                     # For %c, we need to ensure only the low byte is used
                     code += f"  movzx {target_reg}, al # Load character (zero-extended) into {target_reg}\n"
+                # Special handling for float format (%g)
+                elif i < len(format_types) and format_types[i] == "float":
+                    # For %g, the float value is already in xmm0, and needs to stay there
+                    # In x86-64 ABI, floating point args go in xmm0-xmm7
+                    # We don't need to do anything here, as the value is already in the right register (xmm0)
+                    # Each xmm register corresponds to the argument position
+                    xmm_reg = f"xmm{i}"
+                    if i > 0:  # Only move if not already in xmm0
+                        code += f"  movsd {xmm_reg}, xmm0  # Move float to {xmm_reg} for arg {i+1}\n"
                 else:
                     code += f"  mov {target_reg}, rax # Load printf arg into {target_reg}\n"
                     
             code += f"  lea {printf_arg_regs[0]}, {format_label}[rip] # Format string for printf\n"
-            code += "  mov rax, 0 # Num SSE registers for variadic call\n"
+            # For printf with floating point args, RAX must contain the number of vector (xmm) registers used
+            code += f"  mov rax, {float_arg_count} # Number of float/vector args for printf\n"
             code += "  call printf\n"
             if num_val_args > (len(printf_arg_regs) -1):
                 bytes_pushed = (num_val_args - (len(printf_arg_regs) -1)) * 8
@@ -1436,13 +1565,30 @@ class Compiler:
             # Evaluate list pointer (arg 0)
             code += self.visit(node.arguments[0], context) # List pointer in RAX
             code += "  push rax # Save list_ptr on stack (as it might change due to realloc)\n"
+            
+            # Check if we're appending a float value
+            value_type = self.get_expr_type(node.arguments[1], context)
+            is_float_append = (value_type == "float")
+            
             # Evaluate value (arg 1)
-            code += self.visit(node.arguments[1], context) # Value in RAX
-            code += "  push rax # Save value on stack\n"
-
-            code += "  # --- APPEND IMPLEMENTATION ---\n"
-            code += "  pop rsi    # Value to append is now in RSI\n"
-            code += "  pop rdi    # List pointer is now in RDI\n"
+            code += self.visit(node.arguments[1], context) # Value in RAX (or XMM0 for floats)
+            
+            if is_float_append:
+                # For float values, we need to allocate memory to store a copy of the float
+                code += "  sub rsp, 8              # Reserve space for float value\n"
+                code += "  movsd [rsp], xmm0       # Save float value on stack temporarily\n"
+                code += "  mov rdi, 8              # Allocate 8 bytes for the float\n"
+                code += "  call malloc             # Allocate memory for float value\n"
+                code += "  movsd xmm0, [rsp]       # Restore float value\n"
+                code += "  movsd [rax], xmm0       # Store float value in allocated memory\n"
+                code += "  mov rsi, rax            # RSI = pointer to float value\n"
+                code += "  add rsp, 8              # Clean up stack\n"
+                code += "  pop rdi                 # List pointer in RDI\n"
+            else:
+                code += "  push rax # Save value on stack\n"
+                code += "  # --- APPEND IMPLEMENTATION ---\n"
+                code += "  pop rsi    # Value to append is now in RSI\n"
+                code += "  pop rdi    # List pointer is now in RDI\n"
 
             # Check if list_ptr (RDI) is null (meaning uninitialized list)
             null_list_label = f".L_append_null_list_{append_id}"
@@ -1578,15 +1724,31 @@ class Compiler:
             code += "  imul r13, r12, 8 # r13 = last_index * 8 (offset in bytes)\n"
             code += "  add r13, 16 # r13 = header_size + element_offset\n"
             
+            # Determine the element type for appropriate return handling
+            element_type = self.get_array_element_type(node.arguments[0], context)
+            
             # Get the value at the last element position
-            code += "  mov rax, QWORD PTR [rdi + r13] # rax = last element value\n"
-            code += "  push rax # Save the popped value to return later\n"
-            
-            # Update length
-            code += "  mov QWORD PTR [rdi + 8], r12 # Update length = length - 1\n"
-            
-            # Restore return value
-            code += "  pop rax # Restore the popped value to return\n"
+            if element_type == "float":
+                # For float lists, we need to handle the float value properly
+                code += "  mov rax, QWORD PTR [rdi + r13] # rax = pointer to float value\n"
+                code += "  push rax # Save the popped float pointer\n"
+                
+                # Update length
+                code += "  mov QWORD PTR [rdi + 8], r12 # Update length = length - 1\n"
+                
+                # Restore float value and load it into XMM0
+                code += "  pop rax # Restore the popped float pointer\n"
+                code += "  movsd xmm0, QWORD PTR [rax] # Load float value into XMM0\n"
+            else:
+                # For regular (non-float) values
+                code += "  mov rax, QWORD PTR [rdi + r13] # rax = last element value\n"
+                code += "  push rax # Save the popped value to return later\n"
+                
+                # Update length
+                code += "  mov QWORD PTR [rdi + 8], r12 # Update length = length - 1\n"
+                
+                # Restore return value
+                code += "  pop rax # Restore the popped value to return\n"
             
             return code
 
@@ -1610,14 +1772,31 @@ class Compiler:
             code += self.visit(node.arguments[1], context) # Index in RAX
             code += "  push rax # Save index on stack\n"
             
-            # Evaluate value (arg 2)
-            code += self.visit(node.arguments[2], context) # Value in RAX
-            code += "  push rax # Save value on stack\n"
+            # Check if we're inserting a float value
+            value_type = self.get_expr_type(node.arguments[2], context)
+            is_float_insert = (value_type == "float")
             
-            code += "  # --- INSERT IMPLEMENTATION ---\n"
-            code += "  pop rdx    # Value to insert is now in RDX\n"
-            code += "  pop rsi    # Index to insert at is now in RSI\n"
-            code += "  pop rdi    # List pointer is now in RDI\n"
+            # Evaluate value (arg 2)
+            code += self.visit(node.arguments[2], context) # Value in RAX or XMM0 for floats
+            
+            if is_float_insert:
+                # For float values, we need to allocate memory to store a copy of the float
+                code += "  sub rsp, 8              # Reserve space for float value\n"
+                code += "  movsd [rsp], xmm0       # Save float value on stack temporarily\n"
+                code += "  mov rdi, 8              # Allocate 8 bytes for the float\n"
+                code += "  call malloc             # Allocate memory for float value\n"
+                code += "  movsd xmm0, [rsp]       # Restore float value\n"
+                code += "  movsd [rax], xmm0       # Store float value in allocated memory\n"
+                code += "  mov rdx, rax            # RDX = pointer to float value\n"
+                code += "  add rsp, 8              # Clean up stack\n"
+                code += "  pop rsi                 # Index in RSI\n"
+                code += "  pop rdi                 # List pointer in RDI\n"
+            else:
+                code += "  push rax # Save value on stack\n"
+                code += "  # --- INSERT IMPLEMENTATION ---\n"
+                code += "  pop rdx    # Value to insert is now in RDX\n"
+                code += "  pop rsi    # Index to insert at is now in RSI\n"
+                code += "  pop rdi    # List pointer is now in RDI\n"
             
             # Check if list_ptr (RDI) is null (meaning uninitialized list)
             null_list_label = f".L_insert_null_list_{insert_id}"
@@ -2029,6 +2208,71 @@ class Compiler:
             
             return code
 
+        elif node.name == "to_stringf":
+            # to_stringf() function - converts a float to string
+            if len(node.arguments) != 1:
+                raise CompilerError(f"to_stringf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            # Use unique IDs for labels
+            to_stringf_id = self.next_to_string_id  # Reuse the to_string ID counter
+            self.next_to_string_id += 1
+            
+            code = f"  # to_stringf() call at L{node.name_token.lineno}\n"
+            
+            # Get the float in XMM0
+            code += self.visit(node.arguments[0], context)
+            
+            # Use snprintf to safely convert float to string
+            if "snprintf" not in self.externs:
+                self.externs.append("snprintf")
+                
+            # Allocate buffer for the result
+            code += "  sub rsp, 16 # Reserve 16 bytes aligned space for float value\n"
+            code += "  movsd [rsp], xmm0 # Save the float value on stack\n"
+            code += "  mov rdi, 32 # Buffer size for float\n"
+            code += "  call malloc # Allocate buffer\n"
+            code += "  mov r13, rax # Save buffer pointer\n"
+            
+            # Format string for snprintf with %g format for float
+            format_str = "%g"
+            format_label = self.new_string_label(format_str)
+            
+            # Set up snprintf arguments
+            code += "  mov rdi, rax # Buffer pointer (1st arg)\n"
+            code += "  mov rsi, 32 # Buffer size (2nd arg)\n"
+            code += f"  lea rdx, {format_label}[rip] # Format string (3rd arg)\n"
+            code += "  movsd xmm0, [rsp] # Restore float value to XMM0\n"
+            
+            # For variadic functions with floating-point args, need to set RAX to number of vector registers used
+            code += "  mov rax, 1 # 1 vector argument for variadic call\n"
+            code += "  call snprintf # Convert float to string\n"
+            code += "  add rsp, 16 # Clean up stack\n"
+            
+            # Return the buffer pointer that was saved earlier
+            code += "  mov rax, r13 # Return buffer pointer\n"
+            
+            return code
+
+        elif node.name == "to_intf":
+            # to_intf() function - converts a float to integer
+            if len(node.arguments) != 1:
+                raise CompilerError(f"to_intf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno}")
+            
+            # Use unique IDs for labels
+            to_intf_id = self.next_to_int_id  # Reuse the to_int ID counter
+            self.next_to_int_id += 1
+            
+            code = f"  # to_intf() call at L{node.name_token.lineno}\n"
+            
+            # Get the float in XMM0
+            code += self.visit(node.arguments[0], context)
+            
+            # Convert the float in XMM0 to integer in RAX using cvttsd2si
+            # We use cvttsd2si which truncates toward zero
+            code += "  cvttsd2si rax, xmm0 # Convert float to integer (truncate)\n"
+            
+            return code
+
         else:
             # Fallback for other free functions
             explicit_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -2053,6 +2297,203 @@ class Compiler:
         left_type = self.get_expr_type(node.left, context)
         right_type = self.get_expr_type(node.right, context)
         
+        # Handle string concatenation with floats
+        if node.op_token.type == TT_PLUS and (left_type == "string" or right_type == "string"):
+            is_string_concat = True
+            op_assembly += f"  # String concatenation detected\n"
+            
+            # If either side is a float, we need to convert it to string first
+            if left_type == "float":
+                # Convert left float to string
+                op_assembly += self.visit(node.left, context)  # Result in XMM0
+                
+                # Call to_stringf internally
+                to_stringf_id = self.next_to_string_id
+                self.next_to_string_id += 1
+                
+                # Use snprintf to safely convert float to string
+                if "snprintf" not in self.externs:
+                    self.externs.append("snprintf")
+                    
+                # Allocate buffer for the result
+                op_assembly += "  sub rsp, 16 # Reserve 16 bytes aligned space for float value\n"
+                op_assembly += "  movsd [rsp], xmm0 # Save the float value on stack\n"
+                op_assembly += "  mov rdi, 32 # Buffer size for float\n"
+                op_assembly += "  call malloc # Allocate buffer\n"
+                op_assembly += "  mov r13, rax # Save buffer pointer\n"
+                
+                # Format string for snprintf with %g format for float
+                format_str = "%g"
+                format_label = self.new_string_label(format_str)
+                
+                # Set up snprintf arguments
+                op_assembly += "  mov rdi, rax # Buffer pointer (1st arg)\n"
+                op_assembly += "  mov rsi, 32 # Buffer size (2nd arg)\n"
+                op_assembly += f"  lea rdx, {format_label}[rip] # Format string (3rd arg)\n"
+                op_assembly += "  movsd xmm0, [rsp] # Restore float value to XMM0\n"
+                op_assembly += "  mov rax, 1 # 1 vector argument for variadic call\n"
+                op_assembly += "  call snprintf # Convert float to string\n"
+                op_assembly += "  add rsp, 16 # Clean up stack\n"
+                op_assembly += "  mov rax, r13 # String in RAX\n"
+                op_assembly += "  push rax # Save left string\n"
+                
+                # Process right operand
+                op_assembly += self.visit(node.right, context)  # Result in RAX or XMM0
+                op_assembly += "  push rax # Save right string/value\n"
+            elif right_type == "float":
+                # Handle left operand (string)
+                op_assembly += self.visit(node.left, context)  # Result in RAX
+                op_assembly += "  push rax # Save left string\n"
+                
+                # Convert right float to string
+                op_assembly += self.visit(node.right, context)  # Result in XMM0
+                
+                # Call to_stringf internally
+                to_stringf_id = self.next_to_string_id
+                self.next_to_string_id += 1
+                
+                # Use snprintf to safely convert float to string
+                if "snprintf" not in self.externs:
+                    self.externs.append("snprintf")
+                    
+                # Allocate buffer for the result
+                op_assembly += "  sub rsp, 16 # Reserve 16 bytes aligned space for float value\n"
+                op_assembly += "  movsd [rsp], xmm0 # Save the float value on stack\n"
+                op_assembly += "  mov rdi, 32 # Buffer size for float\n"
+                op_assembly += "  call malloc # Allocate buffer\n"
+                op_assembly += "  mov r13, rax # Save buffer pointer\n"
+                
+                # Format string for snprintf with %g format for float
+                format_str = "%g"
+                format_label = self.new_string_label(format_str)
+                
+                # Set up snprintf arguments
+                op_assembly += "  mov rdi, rax # Buffer pointer (1st arg)\n"
+                op_assembly += "  mov rsi, 32 # Buffer size (2nd arg)\n"
+                op_assembly += f"  lea rdx, {format_label}[rip] # Format string (3rd arg)\n"
+                op_assembly += "  movsd xmm0, [rsp] # Restore float value to XMM0\n"
+                op_assembly += "  mov rax, 1 # 1 vector argument for variadic call\n"
+                op_assembly += "  call snprintf # Convert float to string\n"
+                op_assembly += "  add rsp, 16 # Clean up stack\n"
+                op_assembly += "  mov rax, r13 # String in RAX\n"
+                op_assembly += "  push rax # Save right string\n"
+            else:
+                # Regular string concatenation without floats
+                op_assembly += self.visit(node.left, context)  # Result in RAX
+                op_assembly += "  push rax # Save left string\n"
+                
+                op_assembly += self.visit(node.right, context) # Result in RAX
+                op_assembly += "  push rax # Save right string\n"
+            
+            # Get length of left string
+            op_assembly += "  mov rdi, QWORD PTR [rsp+8] # Left string\n"
+            # Add strlen to externs if not already there
+            if "strlen" not in self.externs:
+                self.externs.append("strlen")
+            op_assembly += "  call strlen # Get left string length\n"
+            op_assembly += "  mov rbx, rax # Save left length to RBX\n"
+            
+            # Get length of right string
+            op_assembly += "  mov rdi, QWORD PTR [rsp] # Right string\n"
+            op_assembly += "  call strlen # Get right string length\n"
+            
+            # Calculate total length
+            op_assembly += "  add rax, rbx # Total length\n"
+            op_assembly += "  add rax, 1 # Add 1 for null terminator\n"
+            
+            # Allocate memory for new string
+            op_assembly += "  mov r12, rax # Save total length in r12\n"
+            op_assembly += "  mov rdi, rax # Argument for malloc\n"
+            if "malloc" not in self.externs:
+                self.externs.append("malloc")
+            op_assembly += "  call malloc # Allocate memory for new string\n"
+            
+            # Store the result in a safe register
+            op_assembly += "  mov r13, rax # Save result string pointer\n"
+            
+            # Copy left string
+            op_assembly += "  mov rdi, rax # Destination\n"
+            op_assembly += "  mov rsi, [rsp+8] # Source (left string)\n"
+            if "strcpy" not in self.externs:
+                self.externs.append("strcpy")
+            op_assembly += "  call strcpy # Copy left string\n"
+            
+            # Calculate end of left string
+            op_assembly += "  mov rdi, r13 # Result string\n"
+            op_assembly += "  call strlen # Get length after copying left\n"
+            op_assembly += "  add rax, r13 # Pointer to end of left string\n"
+            
+            # Append right string
+            op_assembly += "  mov rdi, rax # Destination (end of left string)\n"
+            op_assembly += "  mov rsi, [rsp] # Source (right string)\n"
+            if "strcpy" not in self.externs:
+                self.externs.append("strcpy")
+            op_assembly += "  call strcpy # Append right string\n"
+            
+            # Clean up the stack
+            op_assembly += "  add rsp, 16 # Pop saved strings\n"
+            
+            # Final result is in r13
+            op_assembly += "  mov rax, r13 # Final concatenated string\n"
+            
+            return op_assembly
+        
+        # Handle floating-point operations
+        elif left_type == "float" or right_type == "float":
+            float_code = f"  # Floating-point {node.op} at L{node.op_token.lineno}\n"
+            # Evaluate left operand -> xmm0
+            float_code += self.visit(node.left, context)
+            float_code += "  sub rsp, 8             # Reserve space for left float\n"
+            float_code += "  movsd [rsp], xmm0      # Store left float\n"
+            # Evaluate right operand -> xmm0
+            float_code += self.visit(node.right, context)
+            # Swap: xmm0=right, load left into xmm1
+            float_code += "  movsd xmm1, [rsp]      # Load left float into xmm1\n"
+            float_code += "  add rsp, 8             # Restore stack\n"
+            
+            op = node.op_token.type
+            # Handle arithmetic operations
+            if op == TT_PLUS:
+                float_code += "  addsd xmm0, xmm1      # xmm0 = left + right\n"
+            elif op == TT_MINUS:
+                float_code += "  subsd xmm1, xmm0      # xmm1 = left - right\n"
+                float_code += "  movsd xmm0, xmm1      # Move result to xmm0\n"
+            elif op == TT_STAR:
+                float_code += "  mulsd xmm0, xmm1      # xmm0 = left * right\n"
+            elif op == TT_SLASH:
+                float_code += "  divsd xmm1, xmm0      # xmm1 = left / right\n"
+                float_code += "  movsd xmm0, xmm1      # Move result to xmm0\n"
+            # Handle comparison operations
+            elif op in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
+                # For floating point comparisons, we use ucomisd instruction which sets CPU flags
+                # ucomisd compares xmm0 with xmm1, so we need to swap the operands to get the right comparison
+                float_code += "  ucomisd xmm0, xmm1    # Compare right (xmm0) with left (xmm1)\n"
+                
+                # For expressions, we need to set RAX to 0 or 1 based on the comparison result
+                # Note: we're comparing xmm0 (right) with xmm1 (left), so the condition is inverted
+                if op == TT_LESS_THAN:         # left < right becomes right > left
+                    float_code += "  seta al             # Set AL to 1 if right > left (carry flag set)\n"
+                elif op == TT_GREATER_THAN:    # left > right becomes right < left
+                    float_code += "  setb al             # Set AL to 1 if right < left (below flag set)\n"
+                elif op == TT_LESS_EQUAL:      # left <= right becomes right >= left
+                    float_code += "  setae al            # Set AL to 1 if right >= left (carry flag not set)\n"
+                elif op == TT_GREATER_EQUAL:   # left >= right becomes right <= left
+                    float_code += "  setbe al            # Set AL to 1 if right <= left (below or equal flag set)\n"
+                elif op == TT_EQUAL:
+                    float_code += "  sete al             # Set AL to 1 if equal (zero flag set)\n"
+                elif op == TT_NOT_EQUAL:
+                    float_code += "  setne al            # Set AL to 1 if not equal (zero flag not set)\n"
+                    
+                float_code += "  movzx rax, al        # Zero-extend AL to RAX\n"
+                # Return early since we've already set RAX with the comparison result
+                return float_code
+            else:
+                raise CompilerError(f"Unsupported float operator '{node.op}' at L{node.op_token.lineno}")
+            return float_code
+        
+        # Regular integer operations and string concatenation (unchanged)
+        # ... existing code ...
+        
         # Type checking for comparison operations
         if node.op_token.type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
                                   TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
@@ -2073,232 +2514,127 @@ class Compiler:
             if left_type == "string" and right_type == "string":
                 is_string_comparison = True
         
-        if is_string_concat:
-            # String concatenation
+        if is_string_comparison:
+            # String comparison using strcmp
             op_assembly += self.visit(node.left, context)  # Result in RAX
             op_assembly += "  push rax # Save left string\n"
             
             op_assembly += self.visit(node.right, context) # Result in RAX
-            op_assembly += "  push rax # Save right string\n"
+            op_assembly += "  mov rsi, rax # Right string to RSI\n"
+            op_assembly += "  mov rdi, [rsp] # Left string to RDI\n"
             
-            # Get length of left string
-            op_assembly += "  mov rdi, QWORD PTR [rsp+8] # Left string\n"
-            # Add strlen to externs if not already there
-            if "strlen" not in self.externs:
-                self.externs.append("strlen")
-            op_assembly += "  call strlen # Get left string length\n"
-            op_assembly += "  mov rbx, rax # Save left length to RBX\n"
-            
-            # Get length of right string
-            op_assembly += "  mov rdi, QWORD PTR [rsp] # Right string\n"
-            op_assembly += "  call strlen # Get right string length\n"
-            
-            # Allocate buffer for concatenated string (left_len + right_len + 1)
-            op_assembly += "  add rax, rbx # Total length\n"
-            op_assembly += "  add rax, 1 # Add space for null terminator\n"
-            op_assembly += "  mov r12, rax # Save total length\n"
-            op_assembly += "  mov rdi, rax # Buffer size\n"
-            op_assembly += "  call malloc # Allocate buffer\n"
-            op_assembly += "  mov r13, rax # Save buffer pointer\n"
-            
-            # Copy left string to buffer
-            op_assembly += "  mov rdi, r13 # Destination buffer\n"
-            op_assembly += "  mov rsi, QWORD PTR [rsp+8] # Source (left string)\n"
-            # Add strcpy to externs if not already there
-            if "strcpy" not in self.externs:
-                self.externs.append("strcpy")
-            op_assembly += "  call strcpy # Copy left string\n"
-            
-            # Concatenate right string
-            op_assembly += "  mov rdi, rax # Destination buffer (strcpy returns dest)\n"
-            op_assembly += "  mov rsi, QWORD PTR [rsp] # Source (right string)\n"
-            # Add strcat to externs if not already there
-            if "strcat" not in self.externs:
-                self.externs.append("strcat")
-            op_assembly += "  call strcat # Concatenate right string\n"
-            
-            # Save result before stack cleanup
-            op_assembly += "  mov r14, rax # Save result in r14 temporarily\n"
-            
-            # Clean up stack - do not free the source strings, only pop them from stack
-            # This is crucial to avoid double free errors
-            op_assembly += "  add rsp, 16 # Pop string pointers from stack (don't free them)\n"
-            
-            # Move result to rax
-            op_assembly += "  mov rax, r14 # Move result back to RAX\n"
-            
-            # Result is in RAX (new buffer pointer)
-            return op_assembly
-        
-        # For string comparison operations
-        elif is_string_comparison:
             # Add strcmp to externs if not already there
             if "strcmp" not in self.externs:
                 self.externs.append("strcmp")
-                
-            op_assembly += self.visit(node.left, context)  # Result in RAX
-            op_assembly += "  push rax # Save left string\n"
             
-            op_assembly += self.visit(node.right, context) # Result in RAX
-            op_assembly += "  mov rsi, rax # Right string in RSI\n"
-            op_assembly += "  pop rdi # Left string in RDI\n"
-            
-            # Call strcmp to compare the strings
             op_assembly += "  call strcmp # Compare strings\n"
+            op_assembly += "  add rsp, 8 # Pop left string\n"
             
-            # strcmp returns < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
-            # For if statements, we'll handle comparison directly in visit_IfNode
-            # For expressions, we need to set RAX to 0 or 1
-            op_type = node.op_token.type
+            # Result of strcmp is in RAX: <0 if left<right, 0 if equal, >0 if left>right
+            if node.op_token.type == TT_EQUAL:
+                op_assembly += "  cmp rax, 0 # Check if strings are equal\n"
+                op_assembly += "  sete al # Set AL to 1 if equal\n"
+            elif node.op_token.type == TT_NOT_EQUAL:
+                op_assembly += "  cmp rax, 0 # Check if strings are equal\n"
+                op_assembly += "  setne al # Set AL to 1 if not equal\n"
+            elif node.op_token.type == TT_LESS_THAN:
+                op_assembly += "  cmp rax, 0 # Check if left < right\n"
+                op_assembly += "  setl al # Set AL to 1 if less than\n"
+            elif node.op_token.type == TT_GREATER_THAN:
+                op_assembly += "  cmp rax, 0 # Check if left > right\n"
+                op_assembly += "  setg al # Set AL to 1 if greater than\n"
+            elif node.op_token.type == TT_LESS_EQUAL:
+                op_assembly += "  cmp rax, 0 # Check if left <= right\n"
+                op_assembly += "  setle al # Set AL to 1 if less than or equal\n"
+            elif node.op_token.type == TT_GREATER_EQUAL:
+                op_assembly += "  cmp rax, 0 # Check if left >= right\n"
+                op_assembly += "  setge al # Set AL to 1 if greater than or equal\n"
             
-            if op_type == TT_EQUAL:
-                op_assembly += "  test rax, rax # Check if strcmp result is 0 (strings equal)\n"
-            elif op_type == TT_NOT_EQUAL:
-                op_assembly += "  test rax, rax # Check if strcmp result is not 0 (strings not equal)\n"
-            elif op_type == TT_LESS_THAN:
-                op_assembly += "  cmp rax, 0 # Check if strcmp result < 0\n"
-            elif op_type == TT_LESS_EQUAL:
-                op_assembly += "  cmp rax, 1 # Check if strcmp result <= 0\n"
-            elif op_type == TT_GREATER_THAN:
-                op_assembly += "  cmp rax, 0 # Check if strcmp result > 0\n"
-            elif op_type == TT_GREATER_EQUAL:
-                op_assembly += "  cmp rax, -1 # Check if strcmp result >= 0\n"
-            
-            # Note: For if statements, these comparison results will be used 
-            # by conditional jumps in visit_IfNode
-            
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
             return op_assembly
-            
-        # Non-string operations
-        # Evaluate left operand
-        op_assembly += self.visit(node.left, context) 
-        op_assembly += "  push rax # Push left operand\n"
         
-        # Evaluate right operand
-        op_assembly += self.visit(node.right, context) # Right operand result in RAX
+        # For regular integer operations (including string concat which has been handled above)
+        op_assembly += self.visit(node.left, context)  # Result in RAX
+        op_assembly += "  push rax # Save left operand\n"
         
-        op_assembly += "  pop rbx  # Pop left operand into RBX (RBX=left, RAX=right)\n"
+        op_assembly += self.visit(node.right, context) # Result in RAX
+        op_assembly += "  mov rbx, rax # Move right operand to RBX\n"
+        op_assembly += "  pop rax # Restore left operand to RAX\n"
         
-        op_type = node.op_token.type
-
-        if op_type == TT_PLUS:
-            op_assembly += "  add rbx, rax   # RBX = RBX (left) + RAX (right)\n"
-            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
-        elif op_type == TT_MINUS:
-            op_assembly += "  sub rbx, rax   # RBX = RBX (left) - RAX (right)\n"
-            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
-        elif op_type == TT_STAR:
-            # For IMUL rbx, rax, result is in rbx. Or IMUL rax, rbx, result is in rax.
-            # Let's use the form that puts result in RAX directly: RAX = RAX * RBX
-            op_assembly += "  imul rax, rbx  # RAX = RAX (right) * RBX (left)\n"
-        elif op_type == TT_SLASH: # Integer division: left / right (RBX / RAX)
-            op_assembly += "  mov rcx, rax   # Divisor (right operand) from RAX to RCX\n"
-            op_assembly += "  mov rax, rbx   # Dividend (left operand) from RBX to RAX\n"
-            op_assembly += "  cqo            # Sign-extend RAX into RDX:RAX\n"
-            op_assembly += "  idiv rcx       # RDX:RAX / RCX. Quotient in RAX, Remainder in RDX\n"
-            # Result (quotient) is already in RAX
-        elif op_type == TT_PERCENT: # Modulo: left % right (RBX % RAX)
-            op_assembly += "  mov rcx, rax   # Divisor (right operand) from RAX to RCX\n"
-            op_assembly += "  mov rax, rbx   # Dividend (left operand) from RBX to RAX\n"
-            op_assembly += "  cqo            # Sign-extend RAX into RDX:RAX\n"
-            op_assembly += "  idiv rcx       # Quotient in RAX, Remainder in RDX\n"
-            op_assembly += "  mov rax, rdx   # Move remainder from RDX to RAX\n"
-        # Bitwise operations
-        elif op_type == TT_AMPERSAND: # Bitwise AND: left & right
-            op_assembly += "  and rbx, rax   # RBX = RBX (left) & RAX (right)\n"
-            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
-        elif op_type == TT_PIPE: # Bitwise OR: left | right
-            op_assembly += "  or rbx, rax    # RBX = RBX (left) | RAX (right)\n"
-            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
-        elif op_type == TT_CARET: # Bitwise XOR: left ^ right
-            op_assembly += "  xor rbx, rax   # RBX = RBX (left) ^ RAX (right)\n"
-            op_assembly += "  mov rax, rbx   # Move result from RBX to RAX\n"
-        # Shift operations
-        elif op_type == TT_LSHIFT: # Left shift: left << right
-            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
-            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
-            op_assembly += "  sal rax, cl    # RAX = RAX << CL (shift arithmetic left)\n"
-        elif op_type == TT_RSHIFT: # Right shift: left >> right (arithmetic shift)
-            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
-            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
-            op_assembly += "  sar rax, cl    # RAX = RAX >> CL (shift arithmetic right - sign extending)\n"
-        elif op_type == TT_URSHIFT: # Unsigned right shift: left >>> right (logical shift)
-            op_assembly += "  mov rcx, rax   # Shift count (right operand) from RAX to RCX\n"
-            op_assembly += "  mov rax, rbx   # Value to shift (left operand) from RBX to RAX\n"
-            op_assembly += "  shr rax, cl    # RAX = RAX >>> CL (shift logical right - zero filling)\n"
-        elif op_type == TT_LESS_THAN: 
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for <\n"
-            # Result of cmp is in flags, to be used by conditional jumps (e.g., in IfNode)
-            # For expressions, we need to set rax to 0 or 1.
-            # op_assembly += "  setl al      # Set AL to 1 if less (SF!=OF), else 0\n"
-            # op_assembly += "  movzx rax, al  # Zero-extend AL to RAX\n"
-            # The above setl/setg for expressions is not implemented yet. IfNode handles cmp directly.
-            # For now, comparison ops are only for If conditions, not general expressions.
-        elif op_type == TT_GREATER_THAN:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for >\n"
-        elif op_type == TT_LESS_EQUAL:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for <=\n"
-        elif op_type == TT_GREATER_EQUAL:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for >=\n"
-        elif op_type == TT_EQUAL:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for ==\n"
-        elif op_type == TT_NOT_EQUAL:
-            op_assembly += "  cmp rbx, rax   # Compare left (RBX) with right (RAX) for != \n"
-        elif op_type == TT_LOGICAL_AND: # &&
-            # Short-circuit AND: if left is false, result is false, don't eval right.
-            # Left operand is in RBX, Right operand is in RAX (after being evaluated)
-            # Actually, parse_BinaryOpNode evaluates left, pushes, then evaluates right.
-            # So when we get here, left is on stack, right is in RAX.
-            # Let's re-evaluate left first, then decide.
-            op_assembly = f"  # Logical AND (&&) at L{node.op_token.lineno}\n"
-            op_assembly += self.visit(node.left, context) # Left result in RAX
-            op_assembly += "  cmp rax, 0                   # Check if left is false (0)\n"
-            
-            false_label = f".L_logical_and_false_{node.op_token.lineno}_{self.next_if_label_id}"
-            end_label = f".L_logical_and_end_{node.op_token.lineno}_{self.next_if_label_id}"
-            self.next_if_label_id += 1
-
-            op_assembly += f"  je {false_label}             # If left is false, result is false\n"
-            
-            # Left is true, evaluate right expression
-            op_assembly += self.visit(node.right, context) # Right result in RAX
-            op_assembly += "  cmp rax, 0                   # Check if right is false (0)\n"
-            op_assembly += f"  je {false_label}             # If right is false, result is false\n"
-            
-            # Both are true
-            op_assembly += "  mov rax, 1                   # Result is true (1)\n"
-            op_assembly += f"  jmp {end_label}              # Jump to end\n"
-            
-            op_assembly += f"{false_label}:\n"
-            op_assembly += "  mov rax, 0                   # Result is false (0)\n"
-            op_assembly += f"{end_label}:\n"
-
-        elif op_type == TT_LOGICAL_OR: # ||
-            # Short-circuit OR: if left is true, result is true, don't eval right.
-            op_assembly = f"  # Logical OR (||) at L{node.op_token.lineno}\n"
-            op_assembly += self.visit(node.left, context) # Left result in RAX
-            op_assembly += "  cmp rax, 0                   # Check if left is false (0)\n"
-
-            true_label = f".L_logical_or_true_{node.op_token.lineno}_{self.next_if_label_id}"
-            end_label = f".L_logical_or_end_{node.op_token.lineno}_{self.next_if_label_id}"
-            self.next_if_label_id += 1
-
-            op_assembly += f"  jne {true_label}             # If left is true, result is true\n"
-
-            # Left is false, evaluate right expression
-            op_assembly += self.visit(node.right, context) # Right result in RAX
-            op_assembly += "  cmp rax, 0                   # Check if right is false (0)\n"
-            op_assembly += f"  jne {true_label}             # If right is true, result is true\n"
-
-            # Both are false
-            op_assembly += "  mov rax, 0                   # Result is false (0)\n"
-            op_assembly += f"  jmp {end_label}              # Jump to end\n"
-
-            op_assembly += f"{true_label}:\n"
-            op_assembly += "  mov rax, 1                   # Result is true (1)\n"
-            op_assembly += f"{end_label}:\n"
+        op = node.op_token.type
+        # Handle the operation
+        if op == TT_PLUS:
+            op_assembly += "  add rax, rbx # Add right to left\n"
+        elif op == TT_MINUS:
+            op_assembly += "  sub rax, rbx # Subtract right from left\n"
+        elif op == TT_STAR:
+            op_assembly += "  imul rax, rbx # Multiply left by right\n"
+        elif op == TT_SLASH:
+            # Handle division by zero
+            op_assembly += "  test rbx, rbx # Check if divisor is zero\n"
+            op_assembly += "  jnz .Ldiv_ok # Skip if not zero\n"
+            op_assembly += "  mov rdi, 1 # Exit code 1\n"
+            op_assembly += "  call exit # Exit on division by zero\n"
+            op_assembly += ".Ldiv_ok:\n"
+            op_assembly += "  cqo # Sign-extend RAX into RDX:RAX\n"
+            op_assembly += "  idiv rbx # Divide RDX:RAX by RBX, quotient in RAX\n"
+        elif op == TT_PERCENT:
+            # Handle modulo by zero
+            op_assembly += "  test rbx, rbx # Check if divisor is zero\n"
+            op_assembly += "  jnz .Lmod_ok # Skip if not zero\n"
+            op_assembly += "  mov rdi, 1 # Exit code 1\n"
+            op_assembly += "  call exit # Exit on modulo by zero\n"
+            op_assembly += ".Lmod_ok:\n"
+            op_assembly += "  cqo # Sign-extend RAX into RDX:RAX\n"
+            op_assembly += "  idiv rbx # Divide RDX:RAX by RBX, remainder in RDX\n"
+            op_assembly += "  mov rax, rdx # Move remainder to RAX\n"
+        elif op == TT_LOGICAL_AND:
+            op_assembly += "  and rax, rbx # Bitwise AND\n"
+        elif op == TT_LOGICAL_OR:
+            op_assembly += "  or rax, rbx # Bitwise OR\n"
+        elif op == TT_AMPERSAND:
+            op_assembly += "  and rax, rbx # Bitwise AND (&)\n"
+        elif op == TT_PIPE:
+            op_assembly += "  or rax, rbx # Bitwise OR (|)\n"
+        elif op == TT_CARET:
+            op_assembly += "  xor rax, rbx # Bitwise XOR\n"
+        elif op == TT_LSHIFT:
+            op_assembly += "  mov rcx, rbx # Move shift count to RCX\n"
+            op_assembly += "  shl rax, cl # Left shift by CL\n"
+        elif op == TT_RSHIFT:
+            op_assembly += "  mov rcx, rbx # Move shift count to RCX\n"
+            op_assembly += "  shr rax, cl # Right shift by CL\n"
+        elif op == TT_URSHIFT:
+            op_assembly += "  mov rcx, rbx # Move shift count to RCX\n"
+            op_assembly += "  shr rax, cl # Unsigned right shift by CL\n"
+        # Handle comparison operations
+        elif op == TT_EQUAL:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  sete al # Set AL to 1 if equal\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
+        elif op == TT_NOT_EQUAL:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  setne al # Set AL to 1 if not equal\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
+        elif op == TT_LESS_THAN:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  setl al # Set AL to 1 if less than\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
+        elif op == TT_GREATER_THAN:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  setg al # Set AL to 1 if greater than\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
+        elif op == TT_LESS_EQUAL:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  setle al # Set AL to 1 if less than or equal\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
+        elif op == TT_GREATER_EQUAL:
+            op_assembly += "  cmp rax, rbx # Compare left with right\n"
+            op_assembly += "  setge al # Set AL to 1 if greater than or equal\n"
+            op_assembly += "  movzx rax, al # Zero-extend AL to RAX\n"
         else:
-            raise CompilerError(f"Unsupported binary operator type '{node.op_token.type}' (op val: '{node.op}') at L{node.op_token.lineno}")
+            raise CompilerError(f"Unsupported operator '{node.op}' at L{node.op_token.lineno}")
+            
         return op_assembly
 
     def get_expr_type(self, node, context):
@@ -2307,6 +2643,8 @@ class Compiler:
             return "string"
         elif isinstance(node, IntegerLiteralNode):
             return "int"
+        elif isinstance(node, FloatLiteralNode):
+            return "float"
         elif isinstance(node, IdentifierNode):
             var_name = node.value
             if var_name in self.current_method_locals:
@@ -2444,6 +2782,8 @@ class Compiler:
         # Step 1: Evaluate the condition.
         # - For integer comparisons ( <, >, ==, etc. on numbers):
         #   visit_BinaryOpNode will execute a CMP instruction, setting flags. RAX is not relevant for the condition outcome.
+        # - For float comparisons ( <, >, ==, etc. on floats):
+        #   visit_BinaryOpNode will execute a UCOMISD instruction, setting flags, and convert to 0/1 in RAX.
         # - For string comparisons ( <, >, ==, etc. on strings):
         #   visit_BinaryOpNode will call strcmp, result in RAX. We need to CMP RAX, 0.
         # - For logical operations (&&, ||):
@@ -2458,14 +2798,25 @@ class Compiler:
         if isinstance(node.condition, BinaryOpNode):
             op_type = node.condition.op_token.type
             
+            # Check for float comparison
+            is_float_comparison_op = False
+            left_type = self.get_expr_type(node.condition.left, context)
+            right_type = self.get_expr_type(node.condition.right, context)
+            if (left_type == "float" or right_type == "float") and op_type in [
+                TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL
+            ]:
+                is_float_comparison_op = True
+            
             is_string_comparison_op = False
             if op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
-                left_type = self.get_expr_type(node.condition.left, context)
-                right_type = self.get_expr_type(node.condition.right, context)
                 if left_type == "string" and right_type == "string":
                     is_string_comparison_op = True
 
-            if is_string_comparison_op:
+            if is_float_comparison_op:
+                # For float comparisons, visit_BinaryOpNode already set RAX to 0 or 1
+                if_assembly += "  cmp rax, 0                   # Check if float comparison result is false (0)\n"
+                jump_instruction = "jz"                         # Jump if false (RAX == 0)
+            elif is_string_comparison_op:
                 # visit_BinaryOpNode for string comparison put strcmp result in RAX.
                 if_assembly += "  cmp rax, 0                   # Compare strcmp result with 0\n"
                 if op_type == TT_LESS_THAN: jump_instruction = "jge"    # True if rax < 0. Jump if !(rax < 0) => rax >= 0
@@ -2585,144 +2936,180 @@ class Compiler:
         return f"  jmp {end_label} # stop\n"
 
     def visit_AssignmentNode(self, node: AssignmentNode, context):
-        # Assignment statement: variable = expression  OR list[index] = expression OR object::var = expression
-        code = f"  # Assignment at L{node.lineno}\n"
+        assign_assembly = f"  # Assignment at L{node.lineno}\n"
         
-        # Evaluate RHS first, result in RAX
-        code += self.visit(node.expression, context)
-        code += "  push rax # Save RHS value on stack\n"
-
-        # Determine what kind of assignment this is
+        # Check if this is an assignment to a local variable or parameter
         if isinstance(node.target, IdentifierNode):
-            # Simple variable assignment: myVar = ...
             var_name = node.target.value
+            offset_rbp = None
+            var_info = None
+            var_type = None
+            
             if var_name in self.current_method_locals:
-                offset = self.current_method_locals[var_name]['offset_rbp']
+                var_info = self.current_method_locals[var_name]
+                offset_rbp = var_info['offset_rbp']
+                var_type = var_info['type'] if 'type' in var_info else None
             elif var_name in self.current_method_params:
-                offset = self.current_method_params[var_name]['offset_rbp']
-            else:
-                raise CompilerError(f"Assignment to undefined variable '{var_name}' at L{node.lineno}")
+                var_info = self.current_method_params[var_name]
+                offset_rbp = var_info['offset_rbp']
+                var_type = var_info['type'] if 'type' in var_info else None
             
-            code += "  pop rbx    # RHS value into RBX\n"
-            code += f"  mov QWORD PTR [rbp {offset}], rbx # {var_name} = RBX\n"
-        
-        elif isinstance(node.target, ArrayAccessNode):
-            # Array element assignment: myList[idx] = ...
-            array_access_node = node.target
-            assign_array_access_id = self.next_array_access_id  # Use a unique ID
-            self.next_array_access_id += 1
-
-            # 1. Evaluate array expression (list_ptr)
-            code += self.visit(array_access_node.array_expr, context) # list_ptr in RAX
-            code += "  push rax # Save list_ptr\n"
-            
-            # 2. Evaluate index expression
-            code += self.visit(array_access_node.index_expr, context) # index in RAX
-            code += "  mov rbx, rax # Index in RBX\n"
-            
-            code += "  pop rax    # list_ptr back in RAX\n"
-            # RHS value is already on stack, will be popped into RCX later
-
-            # Bounds check
-            idx_ok_label = f".L_assign_idx_ok_{assign_array_access_id}"
-            idx_err_label = f".L_assign_idx_err_{assign_array_access_id}"
-            null_ptr_err_label = f".L_assign_null_ptr_err_{assign_array_access_id}"
-
-            # Check for null list pointer
-            code += "  cmp rax, 0 # Check for null pointer \n"
-            code += f"  je {null_ptr_err_label}\n" # Jump to null pointer error if rax is 0
-
-            code += "  mov rcx, QWORD PTR [rax + 8] # length in RCX\n"
-            code += "  cmp rbx, 0                   # if index < 0\n"
-            code += f"  jl {idx_err_label}           # jump to error\n"
-            code += "  cmp rbx, rcx                 # if index >= length\n"
-            code += f"  jge {idx_err_label}          # jump to error\n"
-            code += f"  jmp {idx_ok_label}         # Index is OK\n"
-
-            code += f"{null_ptr_err_label}:\n"
-            error_msg_null = self.new_string_label("Error: Null pointer access during array assignment.\n")
-            code += f"  lea rdi, {error_msg_null}[rip]\n"
-            code += "  call printf\n"
-            code += "  mov rdi, 1\n"
-            code += "  call exit\n"
-            
-            code += f"{idx_err_label}:\n"
-            error_msg_bounds = self.new_string_label("Error: Array index out of bounds during assignment.\n")
-            code += f"  lea rdi, {error_msg_bounds}[rip]\n"
-            code += "  call printf\n"
-            code += "  mov rdi, 1\n"
-            code += "  call exit\n"
-
-            code += f"{idx_ok_label}:\n"
-            # rax = list_ptr, rbx = index
-            # RHS value is still on the stack
-            code += "  pop rcx    # RHS value in RCX (from first push rax)\n"
-
-            # Calculate address: list_ptr + 16 (header) + (index * 8)
-            code += "  imul rbx, 8                  # index_offset = index * 8\n"
-            code += "  add rbx, 16                  # total_offset = header_size + index_offset\n"
-            code += "  add rax, rbx                 # target_address = list_ptr + total_offset\n"
-            
-            # Store RHS value (RCX) into the calculated address
-            code += "  mov QWORD PTR [rax], rcx     # list_ptr[index] = RHS_value\n"
-            
-        elif isinstance(node.target, ClassVarAccessNode):
-            # Class variable assignment: this:field = ... or obj::field = ...
-            var_access_node = node.target
-            var_name = var_access_node.var_name
-            
-            # Check if this is a 'this:varname' access
-            is_this_access = isinstance(var_access_node.object_expr, ThisNode)
-            class_name, method_name = context
-            
-            if is_this_access:
-                # Assignment to a variable in the current class: this:field = ...
-                if var_name not in self.class_vars.get(class_name, {}):
-                    raise CompilerError(f"Assignment to undefined class variable '{var_name}' at L{node.lineno}")
+            if offset_rbp is not None:
+                # Evaluate the right-hand side expression
+                assign_assembly += self.visit(node.expression, context)
+                
+                # For float variables, store from XMM0
+                if var_type == 'float':
+                    assign_assembly += f"  movq QWORD PTR [rbp {offset_rbp}], xmm0 # Assign float to {var_name}\n"
+                else:
+                    # Store the result into the variable
+                    assign_assembly += f"  mov QWORD PTR [rbp {offset_rbp}], rax # Assign to {var_name}\n"
                     
-                offset, var_type, is_public = self.class_vars[class_name][var_name]
-                code += "  mov rdi, rdi   # 'this' pointer is in RDI\n"
-                code += "  pop rbx        # RHS value into RBX\n"
-                if self.this_ptr_rbp_offset is None:
-                     raise CompilerError(f"'this' pointer not saved for instance method context during assignment. L{node.lineno}")
-                code += f"  mov rdi, QWORD PTR [rbp {self.this_ptr_rbp_offset}] # Load saved 'this' pointer into RDI\n"
-                code += f"  mov QWORD PTR [rdi + {offset}], rbx  # this:{var_name} = RBX\n"
-            else:
-                # Assignment to a variable in another object: obj::field = ...
-                # First evaluate the object expression
-                code += self.visit(var_access_node.object_expr, context)
-                code += "  mov rdi, rax  # Save object pointer in RDI\n"
-                code += "  pop rbx       # RHS value into RBX\n"
-                
-                # Now we need to determine the class type of the object
-                obj_class_type = None
-                if isinstance(var_access_node.object_expr, IdentifierNode):
-                    obj_name = var_access_node.object_expr.value
-                    if obj_name in self.current_method_locals:
-                        obj_class_type = self.current_method_locals[obj_name]['type']
-                    elif obj_name in self.current_method_params:
-                        obj_class_type = self.current_method_params[obj_name]['type']
-                        
-                if not obj_class_type:
-                    raise CompilerError(f"Cannot determine class type for object access at L{node.lineno}")
-                
-                obj_class_type = obj_class_type.replace('.', '_')  # Safe class name for lookup
-                
-                if var_name not in self.class_vars.get(obj_class_type, {}):
-                    raise CompilerError(f"Assignment to undefined class variable '{var_name}' in class '{obj_class_type}' at L{node.lineno}")
-                
-                offset, var_type, is_public = self.class_vars[obj_class_type][var_name]
-                
-                # Check access permission
-                if not is_public and class_name != obj_class_type:
-                    raise CompilerError(f"Cannot access private variable '{var_name}' from outside class '{obj_class_type}' at L{node.lineno}")
-                
-                code += f"  # Assignment to class variable {obj_class_type}::{var_name} at L{node.lineno}\n"
-                code += f"  mov QWORD PTR [rdi + {offset}], rbx  # {var_name} = RBX\n"
-        else:
-            raise CompilerError(f"Invalid LHS for assignment at L{node.lineno}")
+                # Return 0 from assignment (assignment is an expression with value 0)
+                assign_assembly += "  xor rax, rax # Assignment has no value (returns 0)\n"
+                return assign_assembly
+        
+        # Handle assignment to array element: array[index] = expr
+        elif isinstance(node.target, ArrayAccessNode):
+            # Generate a unique ID for this array assignment
+            array_assign_id = self.next_array_access_id
+            self.next_array_access_id += 1
             
-        return code
+            # Get the element type for proper assignment
+            element_type = self.get_array_element_type(node.target.array_expr, context)
+            
+            # First, evaluate the array expression to get the array pointer
+            assign_assembly += self.visit(node.target.array_expr, context)
+            assign_assembly += "  push rax # Save array pointer\n"
+            
+            # Next, evaluate the index expression
+            assign_assembly += self.visit(node.target.index_expr, context)
+            assign_assembly += "  push rax # Save index\n"
+            
+            # Now evaluate the right-hand side expression
+            assign_assembly += self.visit(node.expression, context)
+            
+            # For float assignments, the value is in XMM0, need to handle differently
+            if element_type == 'float':
+                # For now, push the float value to the stack (we'll need to store it later)
+                assign_assembly += "  sub rsp, 8 # Reserve space for float value\n"
+                assign_assembly += "  movsd QWORD PTR [rsp], xmm0 # Save float value on stack\n"
+            else:
+                # For non-float values, just push rax
+                assign_assembly += "  push rax # Save right-hand side value\n"
+            
+            # Get the index back
+            assign_assembly += "  pop rbx # Right-hand side value in RBX\n"
+            assign_assembly += "  pop rcx # Index in RCX\n"
+            assign_assembly += "  pop rax # Array pointer in RAX\n"
+            
+            # Check for null pointer
+            assign_assembly += "  cmp rax, 0 # Check for null array\n"
+            assign_assembly += f"  jne .L_array_assign_not_null_{array_assign_id}\n"
+            # Handle null array error
+            error_msg_null = self.new_string_label("Error: Null pointer access in array assignment.\n")
+            assign_assembly += f"  lea rdi, {error_msg_null}[rip]\n"
+            assign_assembly += "  call printf\n"
+            assign_assembly += "  mov rdi, 1\n"
+            assign_assembly += "  call exit\n"
+            
+            # Array is not null, continue
+            assign_assembly += f".L_array_assign_not_null_{array_assign_id}:\n"
+            
+            # Bounds check
+            assign_assembly += "  mov rdx, QWORD PTR [rax + 8] # Get array length\n"
+            assign_assembly += "  cmp rcx, 0 # Check if index < 0\n"
+            assign_assembly += f"  jl .L_array_assign_bounds_error_{array_assign_id}\n"
+            assign_assembly += "  cmp rcx, rdx # Check if index >= length\n"
+            assign_assembly += f"  jge .L_array_assign_bounds_error_{array_assign_id}\n"
+            assign_assembly += f"  jmp .L_array_assign_bounds_ok_{array_assign_id}\n"
+            
+            # Handle bounds error
+            assign_assembly += f".L_array_assign_bounds_error_{array_assign_id}:\n"
+            error_msg_bounds = self.new_string_label("Error: Array index out of bounds during assignment.\n")
+            assign_assembly += f"  lea rdi, {error_msg_bounds}[rip]\n"
+            assign_assembly += "  call printf\n"
+            assign_assembly += "  mov rdi, 1\n"
+            assign_assembly += "  call exit\n"
+            
+            # Index is within bounds, continue
+            assign_assembly += f".L_array_assign_bounds_ok_{array_assign_id}:\n"
+            
+            # Calculate the address to store the value
+            assign_assembly += "  imul rcx, 8 # Multiply index by 8 (element size)\n"
+            assign_assembly += "  add rcx, 16 # Add header size (capacity + length)\n"
+            assign_assembly += "  add rax, rcx # Calculate address: array_ptr + header + (index * 8)\n"
+            
+            # Store the value
+            if element_type == 'float':
+                # For floats, need to handle the XMM0 value
+                assign_assembly += "  mov QWORD PTR [rax], rbx # Store the float value\n"
+            else:
+                # For regular values, store from RBX
+                assign_assembly += "  mov QWORD PTR [rax], rbx # Store the value\n"
+            
+            # Assignment has no value (returns 0)
+            assign_assembly += "  xor rax, rax # Zero return value\n"
+            return assign_assembly
+            
+        # Handle assignment to class variable: this.var = expr or obj.var = expr
+        elif isinstance(node.target, ClassVarAccessNode):
+            # First, evaluate the object expression (this, obj, etc.)
+            assign_assembly += self.visit(node.target.object_expr, context)
+            assign_assembly += "  push rax # Save object pointer\n"
+            
+            # Now evaluate the right-hand side expression
+            assign_assembly += self.visit(node.expression, context)
+            assign_assembly += "  mov rbx, rax # Right-hand side value in RBX\n"
+            assign_assembly += "  pop rax # Object pointer back in RAX\n"
+            
+            # Check for null object
+            assign_assembly += "  cmp rax, 0 # Check for null object\n"
+            class_var_id = self.next_class_var_id
+            self.next_class_var_id += 1
+            assign_assembly += f"  jne .L_class_var_assign_not_null_{class_var_id}\n"
+            # Handle null object error
+            error_msg_null = self.new_string_label("Error: Null object in class variable assignment.\n")
+            assign_assembly += f"  lea rdi, {error_msg_null}[rip]\n"
+            assign_assembly += "  call printf\n"
+            assign_assembly += "  mov rdi, 1\n"
+            assign_assembly += "  call exit\n"
+            
+            # Object is not null, continue
+            assign_assembly += f".L_class_var_assign_not_null_{class_var_id}:\n"
+            
+            # Determine the class of the object
+            obj_class = None
+            var_name = node.target.var_name
+            
+            # If it's a 'this' access, we can determine the class directly
+            if isinstance(node.target.object_expr, ThisNode):
+                obj_class = context[0] if context else None
+            
+            # If we know the class, find the variable's offset
+            if obj_class and var_name in self.class_vars.get(obj_class, {}):
+                offset, var_type, is_public = self.class_vars[obj_class][var_name]
+                
+                # Store the value at the correct offset
+                if var_type == 'float':
+                    # For float variables, need special handling
+                    assign_assembly += f"  movq QWORD PTR [rax + {offset}], xmm0 # Store float value in class var\n"
+                else:
+                    # For regular variables, store from RBX
+                    assign_assembly += f"  mov QWORD PTR [rax + {offset}], rbx # Store value in class var\n"
+            else:
+                # We couldn't determine the offset statically
+                assign_assembly += f"  # Warning: Could not statically determine offset for {var_name}\n"
+                # Default to using a placeholder offset that will likely cause a compilation error
+                # This is better than silently doing the wrong thing
+                assign_assembly += "  # COMPILATION ERROR: Unknown class variable\n"
+            
+            # Assignment has no value (returns 0)
+            assign_assembly += "  xor rax, rax # Zero return value\n"
+            return assign_assembly
+            
+        # If we get here, the assignment target is not supported
+        raise CompilerError(f"Unsupported assignment target type: {type(node.target)} at L{node.lineno}")
 
     def visit_MacroDefNode(self, node: MacroDefNode, context=None):
         # Macro definitions don't generate code directly
@@ -2917,21 +3304,32 @@ class Compiler:
         code += f"  jmp {idx_ok_label}           # index is OK\n"
 
         code += f"{idx_err_label}:\n"
-        error_msg_bounds = self.new_string_label("Error: Array index out of bounds.\n")
+        error_msg_bounds = self.new_string_label("Error: Array index out of bounds during access.\n")
         code += f"  lea rdi, {error_msg_bounds}[rip]\n"
         code += "  call printf\n"
         code += "  mov rdi, 1\n"
         code += "  call exit\n"
-        
+
         code += f"{idx_ok_label}:\n"
         # Calculate address: list_ptr + 16 (header) + (index * 8)
         code += "  imul rbx, 8                  # index_offset = index * 8\n"
         code += "  add rbx, 16                  # total_offset = header_size + index_offset\n"
         code += "  add rax, rbx                 # element_address = list_ptr + total_offset\n"
         
-        # Load value from element_address into RAX
-        code += "  mov rax, QWORD PTR [rax]     # RAX = value at list_ptr[index]\n"
-        
+        # For float arrays, we need special handling
+        if element_type == "float":
+            # For float arrays, we need to load the value into XMM0
+            # First, get the value in RAX (which might be a pointer to a float literal)
+            code += "  mov rax, QWORD PTR [rax]     # Get element value (pointer to float for float literals)\n"
+            # Then, load the float value into XMM0 from the address in RAX
+            code += "  movsd xmm0, QWORD PTR [rax]  # Load float value into XMM0\n"
+        elif element_type.endswith("[]"):
+            # For nested lists (e.g., matrices), the value is already a pointer
+            code += "  mov rax, QWORD PTR [rax]     # Get list pointer from element\n"
+        else:
+            # For regular values (int, string), just load the value
+            code += "  mov rax, QWORD PTR [rax]     # Get element value\n"
+            
         return code
 
     def compile(self, node: ProgramNode):

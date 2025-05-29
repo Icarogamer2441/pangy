@@ -61,6 +61,10 @@ math_utils
 changeidxval
 insert
 constructor
+floats
+float_lists_advanced
+float_lists
+float_convertions
 
 # Logs
 *.log

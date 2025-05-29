@@ -1,0 +1,37 @@
+class Main {
+    def main() -> void {
+        var f float = 10.5
+
+        print("F = ", f)
+        print(1.5)
+
+        this:prt_float(109.45)
+
+        var flist float[] = {1.5, 2.2}
+
+        append(flist, 2.4)
+
+        this:prt_list(flist)
+
+        var f2 float = pop(flist)
+
+        print("F2 = ", f2)
+    }
+
+    def prt_float(value float) -> void {
+        print("Float(", value, ")")
+    }
+
+    def prt_list(list float[]) -> void {
+        var i int = 0
+
+        loop {
+            if (i >= length(list)) {
+                stop
+            }
+
+            print(list[i])
+            i++
+        }
+    }
+}

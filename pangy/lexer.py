@@ -81,6 +81,8 @@ TT_LOGICAL_OR = 'LOGICAL_OR'   # For '||'
 TT_TRUE = 'TRUE'
 TT_FALSE = 'FALSE'
 
+TT_FLOAT_LITERAL = 'FLOAT_LITERAL'  # Added for float literals
+
 class Token:
     def __init__(self, type, value, lineno=0, colno=0):
         self.type = type
@@ -214,9 +216,23 @@ class Lexer:
     def get_integer_literal(self):
         result = ''
         start_col = self.colno
+        # Read integer part
         while self.current_char is not None and self.current_char.isdigit():
             result += self.current_char
             self.advance()
+        # Check for fractional part for floats
+        if self.current_char == '.':
+            result += self.current_char
+            self.advance()
+            # Require at least one digit after decimal point
+            if self.current_char is None or not self.current_char.isdigit():
+                raise Exception(f"LexerError: Invalid float literal at L{self.lineno}:C{start_col}")
+            while self.current_char is not None and self.current_char.isdigit():
+                result += self.current_char
+                self.advance()
+            # Return float literal token
+            return Token(TT_FLOAT_LITERAL, float(result), self.lineno, start_col)
+        # Otherwise return integer literal token
         return Token(TT_INT_LITERAL, int(result), self.lineno, start_col)
 
     def get_next_token(self):
