@@ -675,7 +675,7 @@ class Compiler:
         
         # 2. Store the result from RAX into the variable's pre-allocated stack slot
         decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX (pointer for lists) at [rbp{var_offset_rbp}]\n"
-        
+
         self.current_method_locals[var_name]['is_initialized'] = True # Mark as initialized
         return decl_assembly
 
@@ -722,13 +722,14 @@ class Compiler:
                         # (assuming all variables are 8 bytes)
                         last_var_offset = max(offset for offset, _, _ in class_vars.values())
                         object_size = last_var_offset + 8
-                
                 call_assembly += f"  mov rdi, {object_size}  # Size for malloc\n"
                 call_assembly += "  call malloc          # Allocate memory, result in RAX\n"
                 
+                call_assembly += "  mov r15, rax         # Save new object pointer in R15 (consistent register)\n"
+
                 # Initialize class variables if needed
                 if safe_class_name in self.class_vars and self.class_vars[safe_class_name]:
-                    call_assembly += "  mov r12, rax      # Save object pointer\n"
+                    # Use r15 for the object pointer during initialization
                     
                     # Find the class in the AST to get initialization expressions
                     class_init_exprs = {}
@@ -742,29 +743,95 @@ class Compiler:
                     for var_name, (offset, var_type, _) in self.class_vars[safe_class_name].items():
                         if var_name in class_init_exprs and class_init_exprs[var_name] is not None:
                             # Initialize with the expression value
-                            call_assembly += "  mov rdi, r12      # Pass object pointer to initialization context\n"
+                            call_assembly += "  mov rdi, r15      # Pass object pointer to initialization context\n"
                             # Create a temporary context with the object as 'this'
                             temp_context = (safe_class_name, "__init__")
                             # Evaluate the initialization expression
                             call_assembly += self.visit(class_init_exprs[var_name], temp_context)
-                            call_assembly += f"  mov QWORD PTR [r12 + {offset}], rax  # Initialize {var_name} with expression result\n"
+                            call_assembly += f"  mov QWORD PTR [r15 + {offset}], rax  # Initialize {var_name} with expression result\n"
                         else:
                             # Default initialization (0 for numbers, empty string for strings)
                             if var_type == "string":
                                 # Empty string is represented as an empty string pointer
                                 empty_str_label = self.new_string_label("")
                                 call_assembly += f"  lea rax, {empty_str_label}[rip]  # Empty string for {var_name}\n"
-                                call_assembly += f"  mov QWORD PTR [r12 + {offset}], rax  # Initialize {var_name} to empty string\n"
+                                call_assembly += f"  mov QWORD PTR [r15 + {offset}], rax  # Initialize {var_name} to empty string\n"
                             else:
                                 # Default to 0 for other types
-                                call_assembly += f"  mov QWORD PTR [r12 + {offset}], 0  # Initialize {var_name} to 0\n"
+                                call_assembly += f"  mov QWORD PTR [r15 + {offset}], 0  # Initialize {var_name} to 0\n"
                     
-                    call_assembly += "  mov rax, r12      # Restore object pointer to RAX\n"
+                    # No need to restore RAX here, r15 holds the object pointer
                 
-                # Optional: call an initializer/constructor ClassName_ClassName if it exists
-                # call_assembly += f"  mov rdi, rax         # Pass new object ptr to constructor in RDI\n"
-                # call_assembly += f"  call {class_name_for_new}_{class_name_for_new} # Call constructor {ClassName}_init or {ClassName}_{ClassName}\n"
-                return call_assembly # RAX contains the new object pointer, this is the result of .new()
+                # Check if the class has a 'new' method (constructor)
+                target_class_node = None
+                for cls in self.current_program_node.classes:
+                    if cls.name.replace('.', '_') == safe_class_name:
+                        target_class_node = cls
+                        break
+
+                has_constructor = False
+                if target_class_node:
+                    for method in target_class_node.methods:
+                        if method.name == "new":
+                            has_constructor = True
+                            break
+
+                if has_constructor:
+                    # Call the constructor (the 'new' method) if it exists
+                    # The newly allocated object pointer is in RAX. This will be the 'this' pointer for the constructor.
+                    # r15 already holds the object pointer
+                    
+                    # Prepare arguments for the constructor call
+                    # The first argument (RDI) will be the 'this' pointer (the new object)
+                    # Subsequent arguments (RSI, RDX, etc.) are the arguments passed to ClassName.new(...)
+                    
+                    # Argument registers for the constructor call (excluding 'this' which is RDI)
+                    constructor_arg_regs = ["rsi", "rdx", "rcx", "r8", "r9"]
+                    num_constructor_args = len(node.arguments)
+                    stack_arg_count_constructor = 0
+                    if num_constructor_args > len(constructor_arg_regs):
+                        stack_arg_count_constructor = num_constructor_args - len(constructor_arg_regs)
+
+                    # Push stack arguments (if any), from right to left
+                    for i in range(num_constructor_args - 1, len(constructor_arg_regs) - 1, -1):
+                        call_assembly += self.visit(node.arguments[i], context)
+                        call_assembly += "  push rax # Push constructor stack argument\n"
+
+                    # Evaluate register arguments and push them temporarily to stack (right to left)
+                    temp_pushes_for_reg_args_constructor = 0
+                    for i in range(min(num_constructor_args, len(constructor_arg_regs)) - 1, -1, -1):
+                        call_assembly += self.visit(node.arguments[i], context)
+                        call_assembly += "  push rax # Temporarily store constructor reg argument\n"
+                        temp_pushes_for_reg_args_constructor += 1
+                    
+                    # Set RDI to the new object pointer ('this')
+                    call_assembly += "  mov rdi, r15 # Set RDI to the new object pointer ('this')\n"
+
+                    # Pop arguments into their designated registers.
+                    for i in range(min(num_constructor_args, len(constructor_arg_regs))):
+                        target_reg = constructor_arg_regs[i]
+                        call_assembly += f"  pop {target_reg} # Load constructor arg into {target_reg}\n"
+                    
+                    alignment_padding_constructor = 0
+                    if stack_arg_count_constructor > 0 and (stack_arg_count_constructor % 2 != 0):
+                        call_assembly += "  sub rsp, 8 # Align stack for odd constructor stack args\n"
+                        alignment_padding_constructor = 8
+
+                    # Call the constructor method (e.g., Vec2_new)
+                    constructor_label = f"{safe_class_name}_new"
+                    call_assembly += f"  call {constructor_label}\n"
+
+                    if alignment_padding_constructor > 0:
+                        call_assembly += f"  add rsp, {alignment_padding_constructor} # Restore stack alignment\n"
+
+                    if stack_arg_count_constructor > 0:
+                        call_assembly += f"  add rsp, {stack_arg_count_constructor * 8} # Clean up constructor stack arguments\n"
+                    
+                else:
+                    call_assembly += f"  # No 'new' constructor found for class {class_name_for_new}. Skipping constructor call.\n"
+                
+                call_assembly += "  mov rax, r15         # Return new object pointer in RAX as the result of .new()\n"
+                return call_assembly
             
             # Not a .new() call, so it's obj.method() or Class.static_method()
             var_type = None

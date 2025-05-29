@@ -1,0 +1,17 @@
+class Vec2 {
+    public var x int = 0
+    public var y int = 0
+
+    // Constructors are optional in pangy, but they can be useful for initializing objects.
+    def new(x int, y int) -> void {
+        this:x = x
+        this:y = y
+    }
+}
+
+class Main {
+    def main() -> void {
+        var v Vec2 = Vec2.new(10, 20)
+        print("v.x: ", v::x, "\nv.y: ", v::y)
+    }
+}
