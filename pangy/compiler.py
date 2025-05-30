@@ -219,8 +219,15 @@ class Compiler:
             code = f"  # Access to class variable this:{var_name} at L{node.lineno}\n"
             if self.this_ptr_rbp_offset is None:
                 raise CompilerError(f"'this' pointer not saved for instance method context. L{node.lineno}")
+            
             code += f"  mov rax, QWORD PTR [rbp {self.this_ptr_rbp_offset}]  # Load saved 'this' pointer\n"
-            code += f"  mov rax, QWORD PTR [rax + {offset}]  # Load {var_name} from object\n"
+            
+            # Handle different variable types
+            if var_type == "float":
+                # For float variables, load directly into XMM0
+                code += f"  movsd xmm0, QWORD PTR [rax + {offset}]  # Load float {var_name} from object into XMM0\n"
+            else:
+                code += f"  mov rax, QWORD PTR [rax + {offset}]  # Load {var_name} from object\n"
             return code
         
         # Accessing a variable from another object (e.g., obj::varname)
@@ -255,7 +262,13 @@ class Compiler:
                 raise CompilerError(f"Cannot access private variable '{var_name}' from outside class '{obj_class_type}' at L{node.lineno}")
             
             code += f"  # Access to class variable {obj_class_type}::{var_name} at L{node.lineno}\n"
-            code += f"  mov rax, QWORD PTR [rcx + {offset}]  # Load {var_name} from object\n"
+            
+            # Handle different variable types
+            if var_type == "float":
+                # For float variables, load directly into XMM0
+                code += f"  movsd xmm0, QWORD PTR [rcx + {offset}]  # Load float {var_name} from object into XMM0\n"
+            else:
+                code += f"  mov rax, QWORD PTR [rcx + {offset}]  # Load {var_name} from object\n"
             return code
 
     def visit_MethodNode(self, node: MethodNode, context=None):
@@ -462,17 +475,32 @@ class Compiler:
                     arg_expr_nodes.append(expr.object_expr)
                     format_types.append("int")
                 else:
-                    # Default handling for other method calls
-                    node_type_for_print = self.get_expr_type(expr, context)
-                    if node_type_for_print == 'string':
-                        format_string_parts.append("%s")
-                        format_types.append("string")
-                    elif node_type_for_print == 'float':
+                    # First, evaluate the exact return type of the method
+                    # by looking it up in the class definitions
+                    method_return_type = self.get_method_return_type(expr, context)
+                    
+                    if method_return_type == 'float':
                         format_string_parts.append("%g")  # %g for float/double
                         format_types.append("float")
-                    else:
-                        format_string_parts.append("%d")
+                    elif method_return_type == 'string':
+                        format_string_parts.append("%s")  # %s for string
+                        format_types.append("string")
+                    elif method_return_type == 'int':
+                        format_string_parts.append("%d")  # %d for int
                         format_types.append("int")
+                    else:
+                        # If we couldn't determine the exact return type,
+                        # fall back to the more general type detection
+                        node_type_for_print = self.get_expr_type(expr, context)
+                        if node_type_for_print == 'string':
+                            format_string_parts.append("%s")
+                            format_types.append("string")
+                        elif node_type_for_print == 'float':
+                            format_string_parts.append("%g")  # %g for float/double
+                            format_types.append("float")
+                        else:
+                            format_string_parts.append("%d")
+                            format_types.append("int")
                     arg_expr_nodes.append(expr)
             elif isinstance(expr, StringLiteralNode):
                 format_string_parts.append(expr.value.replace("%", "%%"))
@@ -837,7 +865,13 @@ class Compiler:
                             temp_context = (safe_class_name, "__init__")
                             # Evaluate the initialization expression
                             call_assembly += self.visit(class_init_exprs[var_name], temp_context)
-                            call_assembly += f"  mov QWORD PTR [r15 + {offset}], rax  # Initialize {var_name} with expression result\n"
+                            
+                            # Store the result based on variable type
+                            if var_type == "float":
+                                # For float variables, store from XMM0
+                                call_assembly += f"  movsd QWORD PTR [r15 + {offset}], xmm0  # Initialize float {var_name} with expression result\n"
+                            else:
+                                call_assembly += f"  mov QWORD PTR [r15 + {offset}], rax  # Initialize {var_name} with expression result\n"
                         else:
                             # Default initialization (0 for numbers, empty string for strings)
                             if var_type == "string":
@@ -845,6 +879,10 @@ class Compiler:
                                 empty_str_label = self.new_string_label("")
                                 call_assembly += f"  lea rax, {empty_str_label}[rip]  # Empty string for {var_name}\n"
                                 call_assembly += f"  mov QWORD PTR [r15 + {offset}], rax  # Initialize {var_name} to empty string\n"
+                            elif var_type == "float":
+                                # Default float value 0.0
+                                call_assembly += f"  pxor xmm0, xmm0  # Set float to 0.0\n"
+                                call_assembly += f"  movsd QWORD PTR [r15 + {offset}], xmm0  # Initialize float {var_name} to 0.0\n"
                             else:
                                 # Default to 0 for other types
                                 call_assembly += f"  mov QWORD PTR [r15 + {offset}], 0  # Initialize {var_name} to 0\n"
@@ -3422,6 +3460,75 @@ class Compiler:
         # Store the program node for reference
         self.current_program_node = node
         return self.visit(node)
+
+    def get_method_return_type(self, method_call_node, context):
+        """
+        Determine the exact return type of a method call by looking up the method definition
+        in the program AST.
+        
+        Args:
+            method_call_node: The MethodCallNode representing the method call
+            context: The current compilation context (class_name, method_name)
+            
+        Returns:
+            The return type string (e.g., 'int', 'float', 'string') or 'unknown' if not found
+        """
+        if not hasattr(self, 'current_program_node'):
+            return 'unknown'
+            
+        current_class, _ = context
+        method_name = method_call_node.method_name
+        
+        # Determine the class that contains this method
+        target_class = None
+        
+        # If this is a call on 'this', we're in the same class
+        if isinstance(method_call_node.object_expr, ThisNode):
+            target_class = current_class
+        # If this is a call on another object or class, determine its type
+        elif isinstance(method_call_node.object_expr, IdentifierNode):
+            obj_name = method_call_node.object_expr.value
+            obj_type = None
+            
+            # Check if it's a class name (for static method calls like ClassName.method())
+            for cls in self.current_program_node.classes:
+                safe_cls_name = cls.name.replace('.', '_')
+                if safe_cls_name == obj_name:
+                    obj_type = safe_cls_name
+                    break
+                    
+            # If not a class name, check local variables and parameters
+            if obj_type is None:
+                if obj_name in self.current_method_locals:
+                    obj_type = self.current_method_locals[obj_name]['type']
+                elif obj_name in self.current_method_params:
+                    obj_type = self.current_method_params[obj_name]['type']
+            
+            # Clean up object type (remove potential trailing [] for array types)
+            if obj_type:
+                if obj_type.endswith('[]'):
+                    obj_type = obj_type[:-2]  # Remove []
+                # Fix class names with dots
+                obj_type = obj_type.replace('.', '_')
+                    
+            target_class = obj_type
+
+        # Search for the method in the target class or all classes if target unknown
+        if target_class:
+            classes_to_search = [cls for cls in self.current_program_node.classes 
+                               if cls.name.replace('.', '_') == target_class]
+        else:
+            classes_to_search = self.current_program_node.classes
+            
+        # Look for the method and return its return type
+        for cls in classes_to_search:
+            for method in cls.methods:
+                if method.name == method_name:
+                    return method.return_type
+                    
+        return 'unknown'
+        
+    # ... existing get_expr_type method remains ...
 
 if __name__ == '__main__':
     from .parser_lexer import Lexer, Parser
