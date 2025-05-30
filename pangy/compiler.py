@@ -413,10 +413,20 @@ class Compiler:
             method_text_assembly += f"  mov QWORD PTR [rbp {argv_offset}], r14 # Store argv list pointer\n"
         else:
             # Spill parameters from registers to their stack slots
-            # (No 'this' to spill for static methods from RDI unless it was a param)
+            # Track which XMM registers are used for float parameters
+            xmm_reg_idx = 0
+            
+            # First, process non-float parameters
             for p_name, p_data in self.current_method_params.items():
-                if 'reg' in p_data:
+                if 'reg' in p_data and p_data['type'] != 'float':
                     method_text_assembly += f"  mov QWORD PTR [rbp {p_data['offset_rbp']}], {p_data['reg']} # Spill param {p_name}\n"
+            
+            # Then process float parameters, which use XMM registers
+            for p_name, p_data in self.current_method_params.items():
+                if 'reg' in p_data and p_data['type'] == 'float':
+                    xmm_reg = f"xmm{xmm_reg_idx}"
+                    method_text_assembly += f"  movsd QWORD PTR [rbp {p_data['offset_rbp']}], {xmm_reg} # Spill float param {p_name}\n"
+                    xmm_reg_idx += 1
 
         method_text_assembly += self.visit(node.body)
         method_text_assembly += f"{epilogue_label}:\n"
@@ -692,9 +702,8 @@ class Compiler:
             
             # Check if this is a float variable
             if 'type' in param_info and param_info['type'] == 'float':
-                # For float variables, load the value into XMM0
-                return f"  mov rax, QWORD PTR [rbp {offset}] # Param {var_name} from [rbp{offset}]\n" + \
-                       f"  movq xmm0, rax # Move float value to XMM0\n"
+                # For float variables, load the value directly into XMM0
+                return f"  movsd xmm0, QWORD PTR [rbp {offset}] # Load float param {var_name} directly from [rbp{offset}] into xmm0\n"
             else:
                 return f"  mov rax, QWORD PTR [rbp {offset}] # Param {var_name} from [rbp{offset}]\n"
         
@@ -704,9 +713,8 @@ class Compiler:
             
             # Check if this is a float variable
             if 'type' in local_info and local_info['type'] == 'float':
-                # For float variables, load the value into XMM0
-                return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n" + \
-                       f"  movq xmm0, rax # Move float value to XMM0\n"
+                # For float variables, load the value directly into XMM0
+                return f"  movsd xmm0, QWORD PTR [rbp {offset}] # Load float local {var_name} directly from [rbp{offset}] into xmm0\n"
             else:
                 return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n"
         
@@ -875,28 +883,67 @@ class Compiler:
 
                     # Push stack arguments (if any), from right to left
                     for i in range(num_constructor_args - 1, len(constructor_arg_regs) - 1, -1):
+                        # Check if this argument is a float before evaluating it
+                        arg_type = self.get_expr_type(node.arguments[i], context)
                         call_assembly += self.visit(node.arguments[i], context)
-                        call_assembly += "  push rax # Push constructor stack argument\n"
+                        if arg_type == "float":
+                            # For float values, need to store the xmm0 register value
+                            call_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
+                            call_assembly += "  movsd [rsp], xmm0      # Store float argument\n"
+                        else:
+                            call_assembly += "  push rax # Push constructor stack argument\n"
 
                     # Evaluate register arguments and push them temporarily to stack (right to left)
                     temp_pushes_for_reg_args_constructor = 0
                     for i in range(min(num_constructor_args, len(constructor_arg_regs)) - 1, -1, -1):
+                        # Check if this argument is a float before evaluating it
+                        arg_type = self.get_expr_type(node.arguments[i], context)
                         call_assembly += self.visit(node.arguments[i], context)
-                        call_assembly += "  push rax # Temporarily store constructor reg argument\n"
+                        if arg_type == "float":
+                            # For float values, need to store the xmm0 register value
+                            call_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
+                            call_assembly += "  movsd [rsp], xmm0      # Store float argument\n"
+                        else:
+                            call_assembly += "  push rax # Temporarily store constructor reg argument\n"
                         temp_pushes_for_reg_args_constructor += 1
                     
                     # Set RDI to the new object pointer ('this')
                     call_assembly += "  mov rdi, r15 # Set RDI to the new object pointer ('this')\n"
 
+                    # Track which arguments are floats for proper register loading
+                    arg_types = []
+                    for i in range(min(num_constructor_args, len(constructor_arg_regs))):
+                        arg_types.append(self.get_expr_type(node.arguments[i], context))
+
+                    # Count float arguments for X86-64 ABI
+                    float_arg_count = 0
+                    for arg_type in arg_types:
+                        if arg_type == "float":
+                            float_arg_count += 1
+
+                    # Track which XMM registers are used for float arguments
+                    xmm_reg_idx = 0
+
                     # Pop arguments into their designated registers.
                     for i in range(min(num_constructor_args, len(constructor_arg_regs))):
                         target_reg = constructor_arg_regs[i]
-                        call_assembly += f"  pop {target_reg} # Load constructor arg into {target_reg}\n"
+                        if i < len(arg_types) and arg_types[i] == "float":
+                            # Handle float arguments - they go into XMM registers
+                            xmm_reg = f"xmm{xmm_reg_idx}"
+                            call_assembly += f"  movsd {xmm_reg}, [rsp] # Load float arg into {xmm_reg}\n"
+                            call_assembly += "  add rsp, 8 # Clean up float arg space\n"
+                            xmm_reg_idx += 1
+                        else:
+                            call_assembly += f"  pop {target_reg} # Load constructor arg into {target_reg}\n"
                     
                     alignment_padding_constructor = 0
                     if stack_arg_count_constructor > 0 and (stack_arg_count_constructor % 2 != 0):
                         call_assembly += "  sub rsp, 8 # Align stack for odd constructor stack args\n"
                         alignment_padding_constructor = 8
+
+                    # For functions with floating-point args, RAX must contain the number of vector (XMM) registers used
+                    if float_arg_count > 0:
+                        call_assembly += f"  mov rax, {float_arg_count} # Number of float/vector args for constructor call\n"
 
                     # Call the constructor method (e.g., Vec2_new)
                     constructor_label = f"{safe_class_name}_new"
@@ -959,14 +1006,28 @@ class Compiler:
         # Evaluate arguments & push to stack (RTL for registers, then RTL for stack args)
         # Push stack arguments (if any), from right to left
         for i in range(num_explicit_args_to_pass - 1, len(explicit_arg_regs) - 1, -1):
+            # Check if this argument is a float before evaluating it
+            arg_type = self.get_expr_type(node.arguments[i], context)
             call_assembly += self.visit(node.arguments[i], context) 
-            call_assembly += "  push rax # Push stack argument\n"
+            if arg_type == "float":
+                # For float values, need to store the xmm0 register value
+                call_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
+                call_assembly += "  movsd [rsp], xmm0      # Store float argument\n"
+            else:
+                call_assembly += "  push rax # Push stack argument\n"
 
         # Evaluate register arguments and push them temporarily to stack (right to left)
         temp_pushes_for_reg_args = 0
         for i in range(min(num_explicit_args_to_pass, len(explicit_arg_regs)) - 1, -1, -1):
-            call_assembly += self.visit(node.arguments[i], context) 
-            call_assembly += "  push rax # Temporarily store reg argument\n"
+            # Check if this argument is a float before evaluating it
+            arg_type = self.get_expr_type(node.arguments[i], context)
+            call_assembly += self.visit(node.arguments[i], context)
+            if arg_type == "float":
+                # For float values, need to store the xmm0 register value
+                call_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
+                call_assembly += "  movsd [rsp], xmm0      # Store float argument\n"
+            else:
+                call_assembly += "  push rax # Temporarily store reg argument\n"
             temp_pushes_for_reg_args += 1
 
         # Setup RDI if it's an instance call on an object variable (already handled for 'this' calls conceptually)
@@ -977,10 +1038,31 @@ class Compiler:
              call_assembly += object_address_in_rdi_setup # This is just a comment for 'this' calls
         # For static calls, RDI will be populated by the first argument pop if any, or is not used if no args.
 
+        # Track which arguments are floats for proper register loading
+        arg_types = []
+        for i in range(min(num_explicit_args_to_pass, len(explicit_arg_regs))):
+            arg_types.append(self.get_expr_type(node.arguments[i], context))
+
+        # Count float arguments for X86-64 ABI
+        float_arg_count = 0
+        for arg_type in arg_types:
+            if arg_type == "float":
+                float_arg_count += 1
+
+        # Track which XMM registers are used for float arguments
+        xmm_reg_idx = 0
+
         # Pop arguments into their designated registers.
         for i in range(min(num_explicit_args_to_pass, len(explicit_arg_regs))):
             target_reg = explicit_arg_regs[i]
-            call_assembly += f"  pop {target_reg} # Load arg into {target_reg}\n"
+            if i < len(arg_types) and arg_types[i] == "float":
+                # Handle float arguments - they go into XMM registers
+                xmm_reg = f"xmm{xmm_reg_idx}"
+                call_assembly += f"  movsd {xmm_reg}, [rsp] # Load float arg into {xmm_reg}\n"
+                call_assembly += "  add rsp, 8 # Clean up float arg space\n"
+                xmm_reg_idx += 1
+            else:
+                call_assembly += f"  pop {target_reg} # Load arg into {target_reg}\n"
         
         # If it's a static call and RDI was not used by an argument, it remains as is (not 'this')
         # If it's an instance call on 'this', RDI was already 'this'.
@@ -990,6 +1072,10 @@ class Compiler:
         if stack_arg_count > 0 and (stack_arg_count % 2 != 0):
             call_assembly += "  sub rsp, 8 # Align stack for odd stack args\n"
             alignment_padding = 8
+
+        # For functions with floating-point args, RAX must contain the number of vector (XMM) registers used
+        if float_arg_count > 0:
+            call_assembly += f"  mov rax, {float_arg_count} # Number of float/vector args for call\n"
 
         call_assembly += f"  call {target_method_label}\n"
 
