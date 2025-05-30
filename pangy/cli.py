@@ -113,6 +113,7 @@ def resolve_include_path(current_file_path: str, module_base_str: str) -> str | 
 # Function to parse a single file and return its classes, macros and further includes
 def parse_single_file(file_path: str) -> tuple[list, list, list, bool, str | None, str | None]:
     # Returns (classes, macros, includes_to_process_next, success, error_type, error_message)
+    # includes_to_process_next is a list of tuples: (resolved_path_to_pgy_file, (import_type, specific_name_to_import))
     if not os.path.exists(file_path):
         return [], [], [], False, "File Not Found", f"Error: File '{file_path}' not found."
     
@@ -133,30 +134,67 @@ def parse_single_file(file_path: str) -> tuple[list, list, list, bool, str | Non
         further_includes_to_process = []
         
         for include_node in ast_program_node.includes:
-            full_include_str = include_node.path # e.g., "mylib.utils.MyClass"
+            full_include_str = include_node.path # e.g., "mylib.utils.MyClass", "mylib.utils.actualfile", "mylib.utils.@mymacro"
             
-            try:
-                module_base_str, _, _ = extract_import_details(full_include_str)
-            except ValueError as e:
-                return [], [], [], False, "Include Error", f"Error parsing include statement '{full_include_str}' in '{file_path}': {e}"
+            resolved_file_to_include = None
+            determined_import_type = "file" # Default: assume importing the whole file
+            determined_specific_name = None
 
-            file_path_to_include = resolve_include_path(file_path, module_base_str)
+            # Attempt 1: Treat the full include string as a potential direct file path
+            # e.g., "mylib.utils.actualfile" -> try to load "mylib/utils/actualfile.pgy"
+            potential_direct_file_path = resolve_include_path(file_path, full_include_str)
+            if potential_direct_file_path and os.path.exists(potential_direct_file_path):
+                resolved_file_to_include = potential_direct_file_path
+                determined_import_type = "file"
+                determined_specific_name = None
+            else:
+                # Attempt 2: Parse the include string for module, type, and specific name
+                try:
+                    module_base_str, import_type_from_extract, specific_name_from_extract = extract_import_details(full_include_str)
+                except ValueError as e:
+                    return [], [], [], False, "Include Error", f"Error parsing include statement '{full_include_str}' in '{file_path}': {e}"
+                
+                resolved_path_for_module = resolve_include_path(file_path, module_base_str)
 
-            if file_path_to_include is None:
-                return [], [], [], False, "File Not Found", f"Error in '{file_path}': Include '{module_base_str}.pgy' (from '{full_include_str}') not found locally or in pangylibs."
+                if resolved_path_for_module and os.path.exists(resolved_path_for_module):
+                    resolved_file_to_include = resolved_path_for_module
+                    determined_import_type = import_type_from_extract
+                    determined_specific_name = specific_name_from_extract
+                    # If extract_import_details said "file" but specific_name is None, it means it was like "justafile".
+                    # If import_type_from_extract is "class" but specific_name_from_extract is None
+                    # (e.g. "MyLib" where MyLib.pgy exists but extract_import_details thought MyLib was a class of itself),
+                    # we should ensure it's treated as a "file" import for MyLib.pgy.
+                    # This is subtle: extract_import_details might identify "MyLib" in "include MyLib" as a potential class
+                    # if there's no further path. But if resolve_include_path then finds "MyLib.pgy", it's a file import.
+                    if import_type_from_extract == "class" and specific_name_from_extract is None:
+                         # This case indicates that extract_import_details might have thought "MyModule" itself was a class
+                         # but we are resolving "MyModule.pgy". So, it's a full file import.
+                         determined_import_type = "file" 
+                else:
+                    # Failed to resolve the module path even after parsing
+                    # Construct a more informative error message
+                    err_msg_detail = f"Could not resolve '{module_base_str}.pgy' for include '{full_include_str}'."
+                    if potential_direct_file_path:
+                        err_msg_detail += f" Also tried '{full_include_str}.pgy' which resolved to '{potential_direct_file_path}' but was not found."
+                    else:
+                        err_msg_detail += f" An attempt to treat '{full_include_str}' as a direct file path also failed to yield an existing file."
+                    return [], [], [], False, "File Not Found", f"Error in '{file_path}': {err_msg_detail} Searched locally and in pangylibs."
+
+            if resolved_file_to_include is None:
+                # This should ideally be caught by the logic above, but as a safeguard:
+                return [], [], [], False, "File Not Found", f"Error in '{file_path}': Include '{full_include_str}' could not be resolved to an existing .pgy file."
             
-            # Pass the full_include_str for filter_imports later
-            further_includes_to_process.append((file_path_to_include, full_include_str))
+            further_includes_to_process.append((resolved_file_to_include, (determined_import_type, determined_specific_name)))
         
         return ast_program_node.classes, ast_program_node.macros, further_includes_to_process, True, None, None
     except Exception as e:
         return [], [], [], False, "Parser Error", f"Parser Error in '{file_path}': {e}"
 
 # Helper to filter classes and macros based on import path
-def filter_imports(classes, macros, import_path_full_str): # import_path_full_str is the original full include string
+def filter_imports(classes, macros, import_type: str, import_name: str | None): # import_path_full_str is the original full include string
     # The module_base_str (first part of tuple) isn't needed here, as the file is already resolved and parsed.
     # We only need the import_type and specific import_name.
-    _, import_type, import_name = extract_import_details(import_path_full_str)
+    # _, import_type, import_name = extract_import_details(import_path_full_str) # No longer calling this
     
     filtered_classes = []
     filtered_macros = []
@@ -242,11 +280,12 @@ def handle_compile_command(args):
 
     all_classes = []
     all_macros = []
-    files_to_process_queue = [(initial_input_file_path, None)] 
+    files_to_process_queue = [(initial_input_file_path, ("file", None))] # Initial file is a full "file" import
     files_added_to_queue = {initial_input_file_path}
 
     while files_to_process_queue:
-        current_file_to_parse, import_path_full = files_to_process_queue.pop(0)
+        current_file_to_parse, import_details = files_to_process_queue.pop(0)
+        # import_details is now a tuple: (import_type, specific_name)
         
         classes_from_file, macros_from_file, next_includes, success, err_type, err_msg = parse_single_file(current_file_to_parse)
         
@@ -254,15 +293,20 @@ def handle_compile_command(args):
             print(f"{err_type}: {err_msg}")
             return
         
-        if import_path_full: # If this file was an import
-            classes_from_file, macros_from_file = filter_imports(classes_from_file, macros_from_file, import_path_full)
+        # Unpack import_details for filter_imports
+        # If import_details is None (e.g. for the very first file), treat as full file import
+        import_type, specific_name = import_details if import_details else ("file", None)
+
+        if import_type != "file": # Only filter if not importing the whole file already
+            classes_from_file, macros_from_file = filter_imports(classes_from_file, macros_from_file, import_type, specific_name)
         
         all_classes.extend(classes_from_file)
         all_macros.extend(macros_from_file)
         
-        for file_path_resolved, full_include_path_str in next_includes:
+        for file_path_resolved, import_details_for_next_file in next_includes:
+            # import_details_for_next_file is (determined_import_type, determined_specific_name)
             if file_path_resolved not in files_added_to_queue:
-                files_to_process_queue.append((file_path_resolved, full_include_path_str))
+                files_to_process_queue.append((file_path_resolved, import_details_for_next_file))
                 files_added_to_queue.add(file_path_resolved)
 
     master_ast = ProgramNode(classes=all_classes, includes=[], macros=all_macros)
