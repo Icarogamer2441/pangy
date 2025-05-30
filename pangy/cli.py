@@ -281,11 +281,13 @@ def handle_compile_command(args):
     all_classes = []
     all_macros = []
     files_to_process_queue = [(initial_input_file_path, ("file", None))] # Initial file is a full "file" import
-    files_added_to_queue = {initial_input_file_path}
+    processed_imports = set()  # Track specific imports instead of just files
+    processed_imports.add((initial_input_file_path, "file", None))  # Add initial file as processed
 
     while files_to_process_queue:
         current_file_to_parse, import_details = files_to_process_queue.pop(0)
         # import_details is now a tuple: (import_type, specific_name)
+        import_type, specific_name = import_details if import_details else ("file", None)
         
         classes_from_file, macros_from_file, next_includes, success, err_type, err_msg = parse_single_file(current_file_to_parse)
         
@@ -293,21 +295,23 @@ def handle_compile_command(args):
             print(f"{err_type}: {err_msg}")
             return
         
-        # Unpack import_details for filter_imports
-        # If import_details is None (e.g. for the very first file), treat as full file import
-        import_type, specific_name = import_details if import_details else ("file", None)
-
-        if import_type != "file": # Only filter if not importing the whole file already
-            classes_from_file, macros_from_file = filter_imports(classes_from_file, macros_from_file, import_type, specific_name)
+        # Filter based on import type and name
+        filtered_classes, filtered_macros = filter_imports(classes_from_file, macros_from_file, import_type, specific_name)
         
-        all_classes.extend(classes_from_file)
-        all_macros.extend(macros_from_file)
+        all_classes.extend(filtered_classes)
+        all_macros.extend(filtered_macros)
         
         for file_path_resolved, import_details_for_next_file in next_includes:
             # import_details_for_next_file is (determined_import_type, determined_specific_name)
-            if file_path_resolved not in files_added_to_queue:
+            import_type_next, specific_name_next = import_details_for_next_file
+            
+            # Create a unique key for this specific import
+            import_key = (file_path_resolved, import_type_next, specific_name_next)
+            
+            # Only add to queue if this specific import hasn't been processed
+            if import_key not in processed_imports:
                 files_to_process_queue.append((file_path_resolved, import_details_for_next_file))
-                files_added_to_queue.add(file_path_resolved)
+                processed_imports.add(import_key)
 
     master_ast = ProgramNode(classes=all_classes, includes=[], macros=all_macros)
 
