@@ -278,42 +278,85 @@ def handle_compile_command(args):
             print(f"Lexer Error (main file for tokens): {e}")
         return
 
-    all_classes = []
-    all_macros = []
-    files_to_process_queue = [(initial_input_file_path, ("file", None))] # Initial file is a full "file" import
-    processed_imports = set()  # Track specific imports instead of just files
-    processed_imports.add((initial_input_file_path, "file", None))  # Add initial file as processed
+    # Master lists for the entire program AST
+    all_classes_for_master_ast = []
+    all_macros_for_master_ast = []
+    
+    # Queue for processing include directives: (absolute_path_to_pgy_file, (import_type, specific_name_to_import))
+    # The specific_name_to_import is used to filter which parts of the file are *explicitly* imported,
+    # but the whole file is parsed and its contents (all classes/macros) are made available.
+    import_directives_queue = [(initial_input_file_path, ("file", None))]
+    
+    # Set to track *specific import directives* that have been queued to avoid redundant processing of the *same directive*.
+    # (e.g., if "include mylib.MyClass" appears twice, we only add it to the queue once).
+    # The key is (resolved_pgy_file_path, import_type, specific_name).
+    processed_import_directives = set()
+    processed_import_directives.add((initial_input_file_path, "file", None))
 
-    while files_to_process_queue:
-        current_file_to_parse, import_details = files_to_process_queue.pop(0)
-        # import_details is now a tuple: (import_type, specific_name)
-        import_type, specific_name = import_details if import_details else ("file", None)
-        
-        classes_from_file, macros_from_file, next_includes, success, err_type, err_msg = parse_single_file(current_file_to_parse)
-        
-        if not success:
-            print(f"{err_type}: {err_msg}")
-            return
-        
-        # Filter based on import type and name
-        filtered_classes, filtered_macros = filter_imports(classes_from_file, macros_from_file, import_type, specific_name)
-        
-        all_classes.extend(filtered_classes)
-        all_macros.extend(filtered_macros)
-        
-        for file_path_resolved, import_details_for_next_file in next_includes:
-            # import_details_for_next_file is (determined_import_type, determined_specific_name)
-            import_type_next, specific_name_next = import_details_for_next_file
-            
-            # Create a unique key for this specific import
-            import_key = (file_path_resolved, import_type_next, specific_name_next)
-            
-            # Only add to queue if this specific import hasn't been processed
-            if import_key not in processed_imports:
-                files_to_process_queue.append((file_path_resolved, import_details_for_next_file))
-                processed_imports.add(import_key)
+    # Cache to store analysis results of a .pgy file to avoid re-parsing.
+    # Key: absolute_path_to_pgy_file
+    # Value: (list_of_ClassNodes, list_of_MacroDefNodes, list_of_further_includes_from_that_file)
+    file_analysis_cache = {}
 
-    master_ast = ProgramNode(classes=all_classes, includes=[], macros=all_macros)
+    while import_directives_queue:
+        current_pgy_file_to_analyze, specific_import_details = import_directives_queue.pop(0)
+        # specific_import_details: (import_type, specific_name) for *this particular import directive*
+
+        # Check cache first
+        if current_pgy_file_to_analyze in file_analysis_cache:
+            classes_from_this_file, macros_from_this_file, includes_from_this_file = file_analysis_cache[current_pgy_file_to_analyze]
+        else:
+            # Parse the file
+            parsed_classes, parsed_macros, further_includes_from_parse, success, err_type, err_msg = parse_single_file(current_pgy_file_to_analyze)
+            if not success:
+                print(f"{err_type}: {err_msg}")
+                return
+            
+            classes_from_this_file = parsed_classes
+            macros_from_this_file = parsed_macros
+            includes_from_this_file = further_includes_from_parse # These are (resolved_path, (type, name))
+
+            # Cache the results of parsing this file
+            file_analysis_cache[current_pgy_file_to_analyze] = (classes_from_this_file, macros_from_this_file, includes_from_this_file)
+
+        # Add ALL classes and macros from this parsed file to our master lists.
+        # Deduplication will happen later.
+        all_classes_for_master_ast.extend(classes_from_this_file)
+        all_macros_for_master_ast.extend(macros_from_this_file)
+        
+        # Now, process the include directives found *within* current_pgy_file_to_analyze
+        for resolved_next_pgy_file, next_import_details_tuple in includes_from_this_file:
+            # next_import_details_tuple is (determined_import_type, determined_specific_name)
+            # This represents an include directive like "include some.other.Module" found inside current_pgy_file_to_analyze.
+            
+            import_key_for_directive = (resolved_next_pgy_file, next_import_details_tuple[0], next_import_details_tuple[1])
+            
+            if import_key_for_directive not in processed_import_directives:
+                import_directives_queue.append((resolved_next_pgy_file, next_import_details_tuple))
+                processed_import_directives.add(import_key_for_directive)
+
+    # Deduplicate classes and macros by name (first encountered wins)
+    final_classes = []
+    seen_class_names = set()
+    for cls_node in all_classes_for_master_ast:
+        if cls_node.name not in seen_class_names:
+            final_classes.append(cls_node)
+            seen_class_names.add(cls_node.name)
+
+    final_macros = []
+    seen_macro_names = set() # Consider macro scope (class vs global) if macros can have same name in diff classes
+    for macro_node in all_macros_for_master_ast:
+        # Assuming macro names are unique globally for now, or qualified if class members
+        # If macros can be part of classes, a more complex key is needed (e.g., classname_macroname)
+        macro_key = macro_node.name 
+        if hasattr(macro_node, 'class_name') and macro_node.class_name: # For class macros
+            macro_key = f"{macro_node.class_name}_{macro_node.name}"
+
+        if macro_key not in seen_macro_names:
+            final_macros.append(macro_node)
+            seen_macro_names.add(macro_key)
+            
+    master_ast = ProgramNode(classes=final_classes, includes=[], macros=final_macros)
 
     if args.ast:
         print("Combined Abstract Syntax Tree (AST) from all included files:")
@@ -326,9 +369,8 @@ def handle_compile_command(args):
         assembly_code = compiler.compile(master_ast)
     except Exception as e:
         print(f"Compiler Error: {e}")
-        # For debugging, you might want to print more details or re-raise with traceback
-        # import traceback
-        # traceback.print_exc()
+        # import traceback # For debugging
+        # traceback.print_exc() # For debugging
         return
 
     base_name = os.path.splitext(os.path.basename(initial_input_file_path))[0]
@@ -337,16 +379,14 @@ def handle_compile_command(args):
     if args.output:
         output_executable_file = args.output
     else:
-        # Adjust default output name based on whether assembly or executable is requested
         if args.assembly:
-            output_executable_file = base_name # Will be forced to .s later if not specified
+            output_executable_file = base_name 
         else:
             output_executable_file = "a.out"
 
 
     if args.assembly:
         s_output_target = args.output if args.output and args.output.endswith(".s") else output_s_file
-        # If -o was given but not ending in .s, warn and use default .s naming convention based on input
         if args.output and not args.output.endswith(".s"):
              s_output_target = f"{os.path.splitext(args.output)[0]}.s"
              print(f"Warning: -S specified, output file '{args.output}' does not end with .s. Saving assembly to '{s_output_target}'")
@@ -356,21 +396,16 @@ def handle_compile_command(args):
         print(f"Assembly code saved to {s_output_target}")
         return
 
-    # Default behavior: compile to executable
-    temp_s_file = f"{base_name}_temp.s" # Use a clearly temporary name
+    temp_s_file = f"{base_name}_temp.s" 
     with open(temp_s_file, 'w') as f:
         f.write(assembly_code)
 
-    # Determine final executable name (respecting -o if provided)
     final_exe_name = output_executable_file
     if args.output:
         final_exe_name = args.output
-        # If -o name ends with .s, but we are not in --assembly mode, it's confusing.
-        # However, gcc can take foo.s as output name if told -o foo.s for an executable.
-        # For simplicity, we'll let it be. User might intend a specific name.
-    else: # No -o provided, not --assembly
+    else: 
         final_exe_name = base_name if os.path.exists(base_name) and os.path.isdir(base_name) else "a.out"
-        if base_name == "a.out" : final_exe_name = "a.out.run" # Avoid overwriting a.out if input is a.out.pgy
+        if base_name == "a.out" : final_exe_name = "a.out.run" 
 
 
     try:

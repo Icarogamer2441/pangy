@@ -74,3 +74,6 @@ float_convertions
 
 # Text files
 *.txt
+
+# Test files
+h_tests/
