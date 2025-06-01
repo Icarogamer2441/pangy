@@ -298,6 +298,9 @@ def handle_compile_command(args):
     # Value: (list_of_ClassNodes, list_of_MacroDefNodes, list_of_further_includes_from_that_file)
     file_analysis_cache = {}
 
+    # Flag to track if math library is used
+    uses_math_library = False
+
     while import_directives_queue:
         current_pgy_file_to_analyze, specific_import_details = import_directives_queue.pop(0)
         # specific_import_details: (import_type, specific_name) for *this particular import directive*
@@ -311,6 +314,39 @@ def handle_compile_command(args):
             if not success:
                 print(f"{err_type}: {err_msg}")
                 return
+            
+            # Check for math library usage
+            for cls in parsed_classes:
+                for method in cls.methods:
+                    # Check if any method contains a math library call
+                    def check_for_math_library(node):
+                        nonlocal uses_math_library
+                        if hasattr(node, 'statements'):
+                            for stmt in node.statements:
+                                check_for_math_library(stmt)
+                        elif hasattr(node, 'expression'):
+                            check_for_math_library(node.expression)
+                        elif hasattr(node, 'condition'):
+                            check_for_math_library(node.condition)
+                            check_for_math_library(node.then_block)
+                            if node.else_block:
+                                check_for_math_library(node.else_block)
+                        elif hasattr(node, 'body'):
+                            check_for_math_library(node.body)
+                        elif hasattr(node, 'left') and hasattr(node, 'right'):
+                            check_for_math_library(node.left)
+                            check_for_math_library(node.right)
+                        elif hasattr(node, 'operand_node'):
+                            check_for_math_library(node.operand_node)
+                        elif hasattr(node, 'arguments'):
+                            for arg in node.arguments:
+                                check_for_math_library(arg)
+                        # Check if this is a CLibraryCallNode with library="m"
+                        if hasattr(node, 'library') and node.library == "m":
+                            uses_math_library = True
+                            
+                    if method.body:
+                        check_for_math_library(method.body)
             
             classes_from_this_file = parsed_classes
             macros_from_this_file = parsed_macros
@@ -407,9 +443,12 @@ def handle_compile_command(args):
         final_exe_name = base_name if os.path.exists(base_name) and os.path.isdir(base_name) else "a.out"
         if base_name == "a.out" : final_exe_name = "a.out.run" 
 
-
     try:
+        # Add -lm flag if math library is used
         compile_command = ["gcc", "-no-pie", temp_s_file, "-o", final_exe_name]
+        if uses_math_library:
+            compile_command.append("-lm")
+            
         print(f"Running: {' '.join(compile_command)}")
         subprocess.run(compile_command, check=True)
         print(f"Executable saved to {final_exe_name}")

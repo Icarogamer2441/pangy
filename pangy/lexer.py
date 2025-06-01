@@ -19,6 +19,9 @@ TT_EOF = 'EOF' # End of File
 TT_MACRO = 'MACRO'
 TT_AT = 'AT'
 
+# C Library support
+TT_USE = 'USE'
+
 # Public/Private keywords
 TT_PUBLIC = 'PUBLIC'
 TT_PRIVATE = 'PRIVATE'
@@ -165,6 +168,8 @@ class Lexer:
             return Token(TT_TRUE, True, self.lineno, start_col)
         elif result == 'false':
             return Token(TT_FALSE, False, self.lineno, start_col)
+        elif result == 'use': # Added for C library usage
+            return Token(TT_USE, 'use', self.lineno, start_col)
         else:
             return Token(TT_IDENTIFIER, result, self.lineno, start_col)
 

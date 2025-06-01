@@ -9,7 +9,8 @@ from .lexer import (
     TT_LOOP, TT_STOP, TT_LBRACKET, TT_RBRACKET, TT_AMPERSAND, TT_PIPE, TT_CARET, 
     TT_TILDE, TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR, 
     TT_FLOAT_LITERAL,
-    TT_TRUE, TT_FALSE
+    TT_TRUE, TT_FALSE,
+    TT_USE
 )
 
 # AST Node base class
@@ -308,6 +309,19 @@ class FalseLiteralNode(ExprNode):
 
     def __repr__(self):
         return f"FalseLiteralNode(value=False)"
+
+# Node for C library calls
+class CLibraryCallNode(ExprNode):
+    def __init__(self, library_token, function_name_token, argument_expr_nodes, lineno):
+        self.library = library_token.value  # e.g., "m" for math library
+        self.library_token = library_token
+        self.function_name = function_name_token.value
+        self.function_name_token = function_name_token
+        self.arguments = argument_expr_nodes  # List of ExprNode
+        self.lineno = lineno
+
+    def __repr__(self):
+        return f"CLibraryCallNode(lib='{self.library}', func='{self.function_name}', args={self.arguments}, L{self.lineno})"
 
 # Parser
 class Parser:
@@ -895,10 +909,36 @@ class Parser:
             self.consume(TT_FALSE)
             return FalseLiteralNode(token)
         elif token.type == TT_LPAREN:
-            self.consume(TT_LPAREN)
-            node = self.parse_expression()
-            self.consume(TT_RPAREN)
-            return node
+            self.consume(TT_LPAREN)  # Consume '('
+            
+            # Check for C library call pattern: ("m" use.func(args))
+            if (self.current_token.type == TT_STRING_LITERAL):
+                library_token = self.consume(TT_STRING_LITERAL)  # Consume library name token
+                
+                if self.current_token.type == TT_USE:
+                    use_token = self.consume(TT_USE)  # Consume 'use' token
+                    self.consume(TT_DOT)  # Consume '.'
+                    function_name_token = self.consume(TT_IDENTIFIER)  # Consume function name
+                    
+                    self.consume(TT_LPAREN)  # Consume '('
+                    arguments = []
+                    if self.current_token.type != TT_RPAREN:
+                        arguments = self.parse_argument_list()
+                    self.consume(TT_RPAREN)  # Consume ')'
+                    
+                    self.consume(TT_RPAREN)  # Consume the closing ')'
+                    
+                    return CLibraryCallNode(library_token, function_name_token, arguments, library_token.lineno)
+                else:
+                    # It's a parenthesized string literal expression
+                    expr = StringLiteralNode(library_token)
+                    self.consume(TT_RPAREN)
+                    return expr
+            else:
+                # Regular parenthesized expression
+                node = self.parse_expression()
+                self.consume(TT_RPAREN)
+                return node
         elif token.type == TT_LBRACE: # For list literals like {1, 2, 3}
             return self.parse_list_literal()
         elif token.type == TT_AT:

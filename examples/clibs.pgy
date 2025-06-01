@@ -1,0 +1,43 @@
+class MathLibTest {
+    def square(x float) -> float {
+        ("m" use.sqrt(x))
+    }
+
+    def pow(x float, y float) -> float {
+        ("m" use.pow(x, y))
+    }
+
+    def log(x float) -> float {
+        ("m" use.log(x))
+    }
+
+    def exp(x float) -> float {
+        ("m" use.exp(x))
+    }
+
+    def sin(x float) -> float {
+        ("m" use.sin(x))
+    }
+
+    def cos(x float) -> float {
+        ("m" use.cos(x))
+    }
+
+    def tan(x float) -> float {
+        ("m" use.tan(x))
+    }
+}
+
+class Main {
+    def main() -> void {
+        var test MathLibTest = MathLibTest.new()
+        var result float = test.square(2.0)
+        print(result)
+        result = test.pow(2.0, 3.0)
+        print(result)
+        result = test.log(2.0)
+        print(result)
+        result = test.exp(2.0)
+        print(result)
+    }
+}

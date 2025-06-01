@@ -16,7 +16,7 @@ from .parser import (
     FloatLiteralNode, IdentifierNode, ThisNode, MethodCallNode, FunctionCallNode, 
     BinaryOpNode, UnaryOpNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode, 
     MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, 
-    ClassVarAccessNode, TrueLiteralNode, FalseLiteralNode
+    ClassVarAccessNode, TrueLiteralNode, FalseLiteralNode, CLibraryCallNode
 )
 # import itertools # Not strictly needed for current logic
 from types import SimpleNamespace # For getattr default
@@ -677,6 +677,7 @@ class Compiler:
         return print_assembly
 
     def visit_ReturnNode(self, node: ReturnNode, context):
+        """Handle a return statement with optional expression."""
         class_name, method_name = context
         epilogue_label = f".L_epilogue_{class_name}_{method_name}"
         ret_assembly = f"  # Return statement at L{node.lineno}\n"
@@ -694,7 +695,10 @@ class Compiler:
         
         # Generate code to evaluate the expression
         if node.expression:
-            ret_assembly += self.visit(node.expression, context)
+            expr_code = self.visit(node.expression, context)
+            if expr_code is None:
+                raise CompilerError(f"Failed to generate code for return expression at L{node.lineno}")
+            ret_assembly += expr_code
             
             # Handle special return types
             if return_type == "float":
@@ -3061,37 +3065,40 @@ class Compiler:
 
     def visit_AssignmentNode(self, node: AssignmentNode, context):
         assign_assembly = f"  # Assignment at L{node.lineno}\n"
-        
-        # Check if this is an assignment to a local variable or parameter
+
+        # Handle simple variable assignment: var = expr
         if isinstance(node.target, IdentifierNode):
             var_name = node.target.value
-            offset_rbp = None
-            var_info = None
-            var_type = None
+            # Check if it's a parameter or local variable
+            local_info = None
+            var_offset_rbp = None
             
             if var_name in self.current_method_locals:
-                var_info = self.current_method_locals[var_name]
-                offset_rbp = var_info['offset_rbp']
-                var_type = var_info['type'] if 'type' in var_info else None
+                local_info = self.current_method_locals[var_name]
+                var_offset_rbp = local_info['offset_rbp']
             elif var_name in self.current_method_params:
-                var_info = self.current_method_params[var_name]
-                offset_rbp = var_info['offset_rbp']
-                var_type = var_info['type'] if 'type' in var_info else None
+                local_info = self.current_method_params[var_name]
+                var_offset_rbp = local_info['offset_rbp']
             
-            if offset_rbp is not None:
-                # Evaluate the right-hand side expression
-                assign_assembly += self.visit(node.expression, context)
-                
+            if var_offset_rbp is None:
+                raise CompilerError(f"Undefined variable '{var_name}' in assignment at L{node.lineno}")
+            
+            var_type_str = local_info['type'] # e.g., "int", "int[]", "float"
+            
+            # Evaluate the expression
+            assign_assembly += self.visit(node.expression, context) # Result will be in RAX or XMM0 for floats
+            
+            # Handle different variable types
+            if var_type_str == "float":
                 # For float variables, store from XMM0
-                if var_type == 'float':
-                    assign_assembly += f"  movq QWORD PTR [rbp {offset_rbp}], xmm0 # Assign float to {var_name}\n"
-                else:
-                    # Store the result into the variable
-                    assign_assembly += f"  mov QWORD PTR [rbp {offset_rbp}], rax # Assign to {var_name}\n"
-                    
-                # Return 0 from assignment (assignment is an expression with value 0)
-                assign_assembly += "  xor rax, rax # Assignment has no value (returns 0)\n"
-                return assign_assembly
+                assign_assembly += f"  movsd QWORD PTR [rbp {var_offset_rbp}], xmm0 # Assign float {var_name} at [rbp{var_offset_rbp}]\n"
+            else:
+                # For non-float variables (including pointers like lists), store from RAX
+                assign_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Assign {var_name} at [rbp{var_offset_rbp}]\n"
+            
+            # Assignments have no value in our language model (returns 0)
+            assign_assembly += "  xor rax, rax # Zero return value\n"
+            return assign_assembly
         
         # Handle assignment to array element: array[index] = expr
         elif isinstance(node.target, ArrayAccessNode):
@@ -3129,45 +3136,60 @@ class Compiler:
             
             # Check for null pointer
             assign_assembly += "  cmp rax, 0 # Check for null array\n"
-            assign_assembly += f"  jne .L_array_assign_not_null_{array_assign_id}\n"
-            # Handle null array error
+            assign_assembly += f"  jne .L_assign_not_null_{array_assign_id}\n"
+            # Handle null pointer access
             error_msg_null = self.new_string_label("Error: Null pointer access in array assignment.\n")
             assign_assembly += f"  lea rdi, {error_msg_null}[rip]\n"
             assign_assembly += "  call printf\n"
             assign_assembly += "  mov rdi, 1\n"
             assign_assembly += "  call exit\n"
-            
-            # Array is not null, continue
-            assign_assembly += f".L_array_assign_not_null_{array_assign_id}:\n"
+            assign_assembly += f".L_assign_not_null_{array_assign_id}:\n"
             
             # Bounds check
-            assign_assembly += "  mov rdx, QWORD PTR [rax + 8] # Get array length\n"
-            assign_assembly += "  cmp rcx, 0 # Check if index < 0\n"
-            assign_assembly += f"  jl .L_array_assign_bounds_error_{array_assign_id}\n"
-            assign_assembly += "  cmp rcx, rdx # Check if index >= length\n"
-            assign_assembly += f"  jge .L_array_assign_bounds_error_{array_assign_id}\n"
-            assign_assembly += f"  jmp .L_array_assign_bounds_ok_{array_assign_id}\n"
+            idx_ok_label = f".L_assign_idx_ok_{array_assign_id}"
+            idx_err_label = f".L_assign_idx_err_{array_assign_id}"
             
-            # Handle bounds error
-            assign_assembly += f".L_array_assign_bounds_error_{array_assign_id}:\n"
+            assign_assembly += "  mov rdx, QWORD PTR [rax + 8] # length in RDX\n"
+            assign_assembly += "  cmp rcx, 0                   # if index < 0\n"
+            assign_assembly += f"  jl {idx_err_label}           # jump to error\n"
+            assign_assembly += "  cmp rcx, rdx                 # if index >= length\n"
+            assign_assembly += f"  jge {idx_err_label}          # jump to error\n"
+            assign_assembly += f"  jmp {idx_ok_label}           # index is OK\n"
+            
+            assign_assembly += f"{idx_err_label}:\n"
             error_msg_bounds = self.new_string_label("Error: Array index out of bounds during assignment.\n")
             assign_assembly += f"  lea rdi, {error_msg_bounds}[rip]\n"
             assign_assembly += "  call printf\n"
             assign_assembly += "  mov rdi, 1\n"
             assign_assembly += "  call exit\n"
             
-            # Index is within bounds, continue
-            assign_assembly += f".L_array_assign_bounds_ok_{array_assign_id}:\n"
-            
-            # Calculate the address to store the value
-            assign_assembly += "  imul rcx, 8 # Multiply index by 8 (element size)\n"
-            assign_assembly += "  add rcx, 16 # Add header size (capacity + length)\n"
+            assign_assembly += f"{idx_ok_label}:\n"
+            # Calculate address: list_ptr + 16 (header) + (index * 8)
+            assign_assembly += "  imul rcx, 8                  # index_offset = index * 8\n"
+            assign_assembly += "  add rcx, 16                  # total_offset = header_size + index_offset\n"
             assign_assembly += "  add rax, rcx # Calculate address: array_ptr + header + (index * 8)\n"
             
             # Store the value
             if element_type == 'float':
-                # For floats, need to handle the XMM0 value
-                assign_assembly += "  mov QWORD PTR [rax], rbx # Store the float value\n"
+                # For floats, we handle differently
+                # Get the current pointer to the float value
+                assign_assembly += "  mov rcx, QWORD PTR [rax]  # Get current float pointer\n"
+                
+                # Check if it's null
+                assign_assembly += "  cmp rcx, 0 # Check if float pointer is null\n"
+                assign_assembly += f"  jne .L_float_ptr_exists_{array_assign_id}\n"
+                
+                # Allocate new memory for the float value
+                assign_assembly += "  push rax # Save element address\n"
+                assign_assembly += "  mov rdi, 8 # Size for float allocation\n"
+                assign_assembly += "  call malloc # Allocate memory for float value\n"
+                assign_assembly += "  mov rcx, rax # Store float ptr in RCX\n"
+                assign_assembly += "  pop rax # Restore element address\n"
+                
+                assign_assembly += f".L_float_ptr_exists_{array_assign_id}:\n"
+                # Store the float value at the pointer
+                assign_assembly += "  movsd QWORD PTR [rcx], xmm0 # Store float value at allocated memory\n"
+                assign_assembly += "  mov QWORD PTR [rax], rcx # Update the float pointer in the list\n"
             else:
                 # For regular values, store from RBX
                 assign_assembly += "  mov QWORD PTR [rax], rbx # Store the value\n"
@@ -3175,65 +3197,116 @@ class Compiler:
             # Assignment has no value (returns 0)
             assign_assembly += "  xor rax, rax # Zero return value\n"
             return assign_assembly
-            
-        # Handle assignment to class variable: this.var = expr or obj.var = expr
+        
+        # Handle assignment to class variable: this:var = expr OR obj::var = expr
         elif isinstance(node.target, ClassVarAccessNode):
-            # First, evaluate the object expression (this, obj, etc.)
-            assign_assembly += self.visit(node.target.object_expr, context)
-            assign_assembly += "  push rax # Save object pointer\n"
-            
-            # Now evaluate the right-hand side expression
+            class_var_target = node.target
+            class_name, method_name = context # Current method's class context
+
+            assign_assembly += f"  # Assignment to class variable at L{node.lineno}\\n"
+
+            # 1. Evaluate the RHS expression (value to assign)
+            # Result will be in RAX (for int/ptr) or XMM0 (for float)
             assign_assembly += self.visit(node.expression, context)
-            assign_assembly += "  mov rbx, rax # Right-hand side value in RBX\n"
-            assign_assembly += "  pop rax # Object pointer back in RAX\n"
             
-            # Check for null object
-            assign_assembly += "  cmp rax, 0 # Check for null object\n"
-            class_var_id = self.next_class_var_id
-            self.next_class_var_id += 1
-            assign_assembly += f"  jne .L_class_var_assign_not_null_{class_var_id}\n"
-            # Handle null object error
-            error_msg_null = self.new_string_label("Error: Null object in class variable assignment.\n")
-            assign_assembly += f"  lea rdi, {error_msg_null}[rip]\n"
-            assign_assembly += "  call printf\n"
-            assign_assembly += "  mov rdi, 1\n"
-            assign_assembly += "  call exit\n"
+            # Temporarily save the RHS value if it's not a float (RAX)
+            # If it's a float, it's in XMM0 and will be used directly.
+            # We need to evaluate the object pointer first.
+            # So, push RAX or save XMM0 content to stack.
             
-            # Object is not null, continue
-            assign_assembly += f".L_class_var_assign_not_null_{class_var_id}:\n"
+            # Determine variable type to know if we should look for XMM0 or RAX
+            # This requires knowing the target variable's type *before* full evaluation.
+            # Let's get target variable info first.
+
+            target_var_name = class_var_target.var_name
+            target_var_info = None
+            object_ptr_assembly = ""
+            is_this_access = isinstance(class_var_target.object_expr, ThisNode)
             
-            # Determine the class of the object
-            obj_class = None
-            var_name = node.target.var_name
-            
-            # If it's a 'this' access, we can determine the class directly
-            if isinstance(node.target.object_expr, ThisNode):
-                obj_class = context[0] if context else None
-            
-            # If we know the class, find the variable's offset
-            if obj_class and var_name in self.class_vars.get(obj_class, {}):
-                offset, var_type, is_public = self.class_vars[obj_class][var_name]
-                
-                # Store the value at the correct offset
-                if var_type == 'float':
-                    # For float variables, need special handling
-                    assign_assembly += f"  movq QWORD PTR [rax + {offset}], xmm0 # Store float value in class var\n"
-                else:
-                    # For regular variables, store from RBX
-                    assign_assembly += f"  mov QWORD PTR [rax + {offset}], rbx # Store value in class var\n"
+            target_class_for_lookup = ""
+
+            if is_this_access:
+                if self.this_ptr_rbp_offset is None:
+                    raise CompilerError(f"'this' pointer not available for assignment to 'this:{target_var_name}'. L{node.lineno}")
+                object_ptr_assembly += f"  mov r11, QWORD PTR [rbp {self.this_ptr_rbp_offset}]  # Load 'this' pointer into R11\\n"
+                target_class_for_lookup = class_name # Current class
             else:
-                # We couldn't determine the offset statically
-                assign_assembly += f"  # Warning: Could not statically determine offset for {var_name}\n"
-                # Default to using a placeholder offset that will likely cause a compilation error
-                # This is better than silently doing the wrong thing
-                assign_assembly += "  # COMPILATION ERROR: Unknown class variable\n"
+                # Evaluate the object expression (e.g., 'obj' in obj::var)
+                # This will put object pointer in RAX. We need to save it.
+                # Problem: RHS is already evaluated and might be in RAX.
+                # Solution: Evaluate RHS, push it. Then evaluate object_expr.
+                
+                # Re-evaluate RHS and push
+                assign_assembly = f"  # Assignment to class variable {target_var_name} at L{node.lineno}\\n" # Reset assign_assembly
+                
+                # First, determine the type of the class variable we are assigning to
+                temp_obj_class_type = None
+                if isinstance(class_var_target.object_expr, IdentifierNode):
+                    obj_name = class_var_target.object_expr.value
+                    if obj_name in self.current_method_locals:
+                        temp_obj_class_type = self.current_method_locals[obj_name]['type']
+                    elif obj_name in self.current_method_params:
+                        temp_obj_class_type = self.current_method_params[obj_name]['type']
+                
+                if not temp_obj_class_type:
+                    raise CompilerError(f"Cannot determine class type for object in assignment '{class_var_target.object_expr.value}::{target_var_name}' at L{node.lineno}")
+                
+                target_class_for_lookup = temp_obj_class_type.replace('.', '_')
+                
+                if target_var_name not in self.class_vars.get(target_class_for_lookup, {}):
+                     raise CompilerError(f"Undefined class variable '{target_var_name}' in class '{target_class_for_lookup}' for assignment at L{node.lineno}")
+                
+                _, var_type, _ = self.class_vars[target_class_for_lookup][target_var_name]
+
+                # Now evaluate RHS and push/save it
+                assign_assembly += self.visit(node.expression, context) # RHS in RAX or XMM0
+                if var_type == "float":
+                    assign_assembly += "  sub rsp, 8\\n"
+                    assign_assembly += "  movsd [rsp], xmm0  # Save RHS float value on stack\\n"
+                else:
+                    assign_assembly += "  push rax           # Save RHS non-float value on stack\\n"
+
+                # Evaluate object_expr (e.g., 'obj' in obj::var = RHS)
+                assign_assembly += self.visit(class_var_target.object_expr, context) # Object pointer in RAX
+                assign_assembly += "  mov r11, rax         # Move object pointer to R11\\n"
+                
+                # Restore RHS value
+                if var_type == "float":
+                    assign_assembly += "  movsd xmm0, [rsp]  # Restore RHS float value to XMM0\\n"
+                    assign_assembly += "  add rsp, 8\\n"
+                else:
+                    assign_assembly += "  pop r10            # Restore RHS non-float value to R10 (RAX used by object_expr)\\n"
             
-            # Assignment has no value (returns 0)
-            assign_assembly += "  xor rax, rax # Zero return value\n"
+            # Get variable info (offset, type, public/private)
+            safe_target_class_name = target_class_for_lookup.replace('.', '_')
+            if safe_target_class_name not in self.class_vars or \
+               target_var_name not in self.class_vars[safe_target_class_name]:
+                raise CompilerError(f"Undefined class variable '{target_var_name}' in class '{safe_target_class_name}' for assignment at L{node.lineno}")
+
+            offset, var_type, is_public = self.class_vars[safe_target_class_name][target_var_name]
+
+            # Access check for obj::var
+            if not is_this_access and not is_public and class_name != safe_target_class_name:
+                 raise CompilerError(f"Cannot assign to private variable '{target_var_name}' of class '{safe_target_class_name}' from class '{class_name}' at L{node.lineno}")
+
+            # Add object pointer loading assembly if it's 'this' access (done slightly differently now)
+            if is_this_access:
+                 assign_assembly += object_ptr_assembly
+
+
+            # Store the value (RHS) into the class variable
+            # R11 contains the object pointer (this or obj)
+            # Value to store is in XMM0 (if float) or R10 (if obj::var and non-float) or RAX (if this:var and non-float)
+            if var_type == "float":
+                assign_assembly += f"  movsd QWORD PTR [r11 + {offset}], xmm0  # Assign to float class var {target_var_name}\\n"
+            else:
+                # If it was this:var, RHS is in RAX. If obj::var, RHS is in R10.
+                source_reg = "rax" if is_this_access else "r10"
+                assign_assembly += f"  mov QWORD PTR [r11 + {offset}], {source_reg}   # Assign to class var {target_var_name}\\n"
+
+            # Assignments have no value in our language model (returns 0)
+            assign_assembly += "  xor rax, rax # Zero return value for assignment expression\\n"
             return assign_assembly
-            
-        # If we get here, the assignment target is not supported
-        raise CompilerError(f"Unsupported assignment target type: {type(node.target)} at L{node.lineno}")
 
     def visit_MacroDefNode(self, node: MacroDefNode, context=None):
         # Macro definitions don't generate code directly
@@ -3352,6 +3425,18 @@ class Compiler:
         num_elements = len(node.elements)
         code = f"  # ListLiteral with {num_elements} elements at L{node.lineno}\n"
 
+        # Determine the element type of this list (important for float lists)
+        element_type = "unknown"
+        is_float_matrix = False
+        if num_elements > 0:
+            element_type = self.get_expr_type(node.elements[0], context)
+            # Check if this is a matrix with float elements
+            if element_type.endswith("[]"):
+                # This is a list of lists - check first inner list to see if it contains floats
+                if isinstance(node.elements[0], ListLiteralNode) and len(node.elements[0].elements) > 0:
+                    inner_element_type = self.get_expr_type(node.elements[0].elements[0], context)
+                    is_float_matrix = (inner_element_type == "float")
+        
         # Initial capacity: max(8, num_elements) for some initial space, or just num_elements if exact fit
         initial_capacity = max(8, num_elements) 
         
@@ -3372,15 +3457,39 @@ class Compiler:
             if isinstance(expr_node, ListLiteralNode):
                 # For nested list literals, recursively process them
                 code += self.visit(expr_node, context) # This will create the inner list and leave its pointer in RAX
+                
+                # Need to get list_ptr from stack to store element
+                code += "  pop rbx               # list_ptr into RBX\n"
+                current_element_offset = element_base_offset + (i * 8)
+                code += f"  mov QWORD PTR [rbx + {current_element_offset}], rax # list_ptr[element_offset] = value\n"
+                code += "  push rbx              # Push list_ptr back on stack\n"
+            elif element_type == "float" or isinstance(expr_node, FloatLiteralNode):
+                # For float elements, we need to handle the value differently
+                # 1. Evaluate the expression (puts float value in XMM0)
+                code += self.visit(expr_node, context)
+                
+                # 2. Allocate memory for the float value (8 bytes)
+                code += "  push rax              # Save any registers\n"
+                code += "  mov rdi, 8            # Size for float allocation\n"
+                code += "  call malloc           # Allocate memory for float value\n"
+                code += "  movsd QWORD PTR [rax], xmm0 # Store float value at allocated memory\n"
+                
+                # 3. Store the pointer to the float value in the list
+                code += "  mov rcx, rax          # Save float ptr in RCX\n"
+                code += "  pop rax               # Restore RAX\n"
+                code += "  pop rbx               # list_ptr into RBX\n"
+                current_element_offset = element_base_offset + (i * 8)
+                code += f"  mov QWORD PTR [rbx + {current_element_offset}], rcx # list_ptr[element_offset] = float_ptr\n"
+                code += "  push rbx              # Push list_ptr back on stack\n"
             else:
-                # Normal element
+                # Normal element (integer, string, etc.)
                 code += self.visit(expr_node, context) # Element value in RAX
-            
-            # Need to get list_ptr from stack to store element
-            code += "  pop rbx               # list_ptr into RBX\n"
-            current_element_offset = element_base_offset + (i * 8)
-            code += f"  mov QWORD PTR [rbx + {current_element_offset}], rax # list_ptr[element_offset] = value\n"
-            code += "  push rbx              # Push list_ptr back on stack\n"
+                
+                # Need to get list_ptr from stack to store element
+                code += "  pop rbx               # list_ptr into RBX\n"
+                current_element_offset = element_base_offset + (i * 8)
+                code += f"  mov QWORD PTR [rbx + {current_element_offset}], rax # list_ptr[element_offset] = value\n"
+                code += "  push rbx              # Push list_ptr back on stack\n"
         
         code += "  pop rax # Final list_ptr (from last push) into RAX to be the result of this expression\n"
         return code
@@ -3442,11 +3551,18 @@ class Compiler:
         
         # For float arrays, we need special handling
         if element_type == "float":
-            # For float arrays, we need to load the value into XMM0
-            # First, get the value in RAX (which might be a pointer to a float literal)
-            code += "  mov rax, QWORD PTR [rax]     # Get element value (pointer to float for float literals)\n"
-            # Then, load the float value into XMM0 from the address in RAX
-            code += "  movsd xmm0, QWORD PTR [rax]  # Load float value into XMM0\n"
+            # For float arrays, the element is a pointer to a float value
+            code += "  mov rax, QWORD PTR [rax]     # Get pointer to float value\n"
+            code += "  test rax, rax                # Check if pointer is NULL\n"
+            code += f"  jnz .L_valid_float_ptr_{array_access_id}\n"
+            # Handle null float pointer
+            error_msg_null_float = self.new_string_label("Error: Null float pointer access.\n")
+            code += f"  lea rdi, {error_msg_null_float}[rip]\n"
+            code += "  call printf\n"
+            code += "  mov rdi, 1\n"
+            code += "  call exit\n"
+            code += f".L_valid_float_ptr_{array_access_id}:\n"
+            code += "  movsd xmm0, QWORD PTR [rax]  # Load float value directly into XMM0\n"
         elif element_type.endswith("[]"):
             # For nested lists (e.g., matrices), the value is already a pointer
             code += "  mov rax, QWORD PTR [rax]     # Get list pointer from element\n"
@@ -3530,6 +3646,46 @@ class Compiler:
         
     # ... existing get_expr_type method remains ...
 
+    def visit_CLibraryCallNode(self, node: CLibraryCallNode, context):
+        """
+        Generate code to call a C library function.
+        Currently supporting 'math' library functions that use float parameters.
+        """
+        library = node.library
+        function_name = node.function_name
+        
+        if library == "m":  # Math library
+            # Add the math function to externs if not already there
+            if function_name not in self.externs:
+                self.externs.append(function_name)
+                
+            code = f"  # C library call: {library}.{function_name} at L{node.lineno}\n"
+            
+            # Handle arguments (floating point arguments for math functions)
+            # Math functions in C typically expect args in xmm0, xmm1, etc. for floats
+            # and return results in xmm0
+            
+            # For multiple arguments, we need to evaluate them in reverse to preserve order
+            for i, arg in reversed(list(enumerate(node.arguments))):
+                # Generate code to compute the argument value
+                code += self.visit(arg, context)
+                
+                # If more than one argument, move results to the appropriate registers
+                if i > 0:
+                    # For floating point arguments, store to xmm0-xmm7
+                    if i <= 7:  # x86_64 calling convention allows up to 8 floating point args
+                        code += f"  movsd %xmm{i}, %xmm0\n"
+            
+            # Call the C library function
+            code += f"  call {function_name}@PLT\n"
+            
+            # Result is already in xmm0 for floating point return values
+            return code
+        else:
+            # Support for other libraries can be added here
+            raise CompilerError(f"Unsupported C library: '{library}' at L{node.lineno}")
+            
+
 if __name__ == '__main__':
     from .parser_lexer import Lexer, Parser
     source_code_funcs = '''
@@ -3593,4 +3749,3 @@ if __name__ == '__main__':
         print(f"\nAn unexpected error occurred during compilation (print_multi): {e}")
         import traceback
         traceback.print_exc()
-
