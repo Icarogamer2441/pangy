@@ -42,6 +42,6 @@ class Main {
     }
 
     // def full_ld() -> void {
-    //    var other_lds string[] {"m"} // this is the list of libraries to load (optional because i already loaded it)
+    //    var other_lds string[] {"m"} // this is the list of other libraries to load (optional because i already loaded it)
     // }
 }

@@ -747,15 +747,28 @@ class Compiler:
             if 'type' in local_info and local_info['type'] == 'float':
                 # For float variables, load the value directly into XMM0
                 return f"  movsd xmm0, QWORD PTR [rbp {offset}] # Load float local {var_name} directly from [rbp{offset}] into xmm0\n"
+            # If variable type is 'func', its value (an address) is loaded into RAX
+            # Otherwise, it's a regular variable (int, string ptr, list ptr etc.)
             else:
-                return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}]\n"
+                return f"  mov rax, QWORD PTR [rbp {offset}] # Local var {var_name} from [rbp{offset}] (value or func addr)\n"
         
-        elif isinstance(node, IntegerLiteralNode):
-            return "int"
-        elif isinstance(node, TrueLiteralNode) or isinstance(node, FalseLiteralNode):
-            return "bool" # Or could be "int" if booleans are treated as 0/1 integers
+        # Not a local variable or parameter, try to resolve as a direct function name
+        # This is for when a function name itself is used as a value (e.g., to get its address)
+        else:
+            label = self.resolve_function_name_to_label(var_name, context)
+            if label:
+                return f"  lea rax, [{label}] # Address of function {var_name}\n"
 
-        raise CompilerError(f"Undefined identifier '{var_name}' at L{node.token.lineno}. Only params and declared local vars supported.")
+            # Fallback for IntegerLiteralNode, TrueLiteralNode, FalseLiteralNode (if they can reach here)
+            # This part of the original code seems misplaced as IdentifierNode shouldn't be these literals.
+            # It's likely dead code or from a previous structure.
+            # For safety, I'll keep it commented out or remove if it's confirmed dead.
+            # if isinstance(node, IntegerLiteralNode):
+            #     return "int"
+            # elif isinstance(node, TrueLiteralNode) or isinstance(node, FalseLiteralNode):
+            #     return "bool" 
+
+            raise CompilerError(f"Undefined identifier '{var_name}' at L{node.token.lineno}. Not a param, local var, or known function.")
 
     def visit_ThisNode(self, node: ThisNode, context):
         class_name, method_name = context
@@ -787,12 +800,16 @@ class Compiler:
         
         # 1. Evaluate the right-hand side expression (initialization value)
         #    This will handle ListLiteralNode if used for initialization.
+        #    If RHS is an IdentifierNode that is a function name, visit_IdentifierNode will load its address.
         decl_assembly += self.visit(node.expression, context) # Result will be in RAX or XMM0 for floats
         
         # 2. Store the result into the variable's pre-allocated stack slot
         if var_type_str == "float":
             # For float variables, store from XMM0
             decl_assembly += f"  movq QWORD PTR [rbp {var_offset_rbp}], xmm0 # Initialize float {var_name} at [rbp{var_offset_rbp}]\n"
+        elif var_type_str == "func":
+             # For 'func' type, RAX contains the address of the function (from visit_IdentifierNode or other expr)
+            decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize func {var_name} with address in RAX at [rbp{var_offset_rbp}]\n"
         else:
             # For other types, store from RAX
             decl_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Initialize {var_name} = RAX (pointer for lists) at [rbp{var_offset_rbp}]\n"
@@ -1131,19 +1148,52 @@ class Compiler:
 
     def visit_FunctionCallNode(self, node: FunctionCallNode, context):
         # Built-in free function call support (e.g., exit(code))
-        if node.name == "exit":
+        
+        # Check if the 'function name' is actually a variable of type 'func' (a callback)
+        is_callback_call = False
+        func_addr_in_rax_setup_code = ""
+
+        if isinstance(node.name, str): # Standard function call by name
+            pass # Keep existing logic path
+        elif isinstance(node.name, IdentifierNode): # Potentially a callback variable
+            var_name = node.name.value
+            var_type = None
+            if var_name in self.current_method_locals:
+                var_type = self.current_method_locals[var_name]['type']
+            elif var_name in self.current_method_params:
+                var_type = self.current_method_params[var_name]['type']
+            
+            if var_type == "func":
+                is_callback_call = True
+                # The IdentifierNode itself (node.name) needs to be visited to load the func address into RAX
+                func_addr_in_rax_setup_code = self.visit(node.name, context)
+                # func_addr_in_rax_setup_code will be like: "  mov rax, QWORD PTR [rbp -offset] # Local var cb from ..."
+            else:
+                # If it's an IdentifierNode but not type 'func', it's an error or unhandled case for FunctionCallNode
+                # (FunctionCallNode's 'name' field is usually a string, not an ASTNode)
+                # This path implies an issue with how the AST is constructed or how this visitor is reached.
+                # For now, let a later check handle it or raise an error.
+                pass 
+
+        # If it's a callback call, the function address is now in RAX (set up by func_addr_in_rax_setup_code)
+        # We will need to use `call rax` (or another register if RAX is needed for an argument).
+        
+        # Original function name or callback variable name for error messages/comments
+        effective_func_name_for_display = node.name if isinstance(node.name, str) else node.name.value
+
+        if not is_callback_call and node.name == "exit":
             # exit expects one argument
             if len(node.arguments) != 1:
-                raise CompilerError(f"exit() expects exactly one argument, got {len(node.arguments)} L{node.name_token.lineno}")
-            code = f"  # exit({node.arguments[0]}) call at L{node.name_token.lineno}\n"
+                raise CompilerError(f"exit() expects exactly one argument, got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
+            code = f"  # exit() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             # Evaluate argument to RAX
             code += self.visit(node.arguments[0], context)
             code += "  mov rdi, rax # exit code\n"
             code += "  call exit\n"
             return code
-        elif node.name == "show":
+        elif not is_callback_call and node.name == "show":
             # Built-in show function - like print but without a newline
-            code = f"  # show() call at L{node.name_token.lineno}\n"
+            code = f"  # show() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             format_string_parts = []
             arg_expr_nodes = []
             format_types = []
@@ -1346,12 +1396,12 @@ class Compiler:
                 bytes_pushed = (num_val_args - (len(printf_arg_regs) -1)) * 8
                 code += f"  add rsp, {bytes_pushed} # Clean up printf stack arguments\n"
             return code
-        elif node.name == "exec":
+        elif not is_callback_call and node.name == "exec":
             # exec(command, mode) - Execute a terminal command
             if len(node.arguments) != 2:
-                raise CompilerError(f"exec() expects exactly two arguments (command, mode), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"exec() expects exactly two arguments (command, mode), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
-            code = f"  # exec() call at L{node.name_token.lineno}\n"
+            code = f"  # exec() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Generate a unique label for this exec call to avoid conflicts
             if not hasattr(self, 'exec_counter'):
@@ -1575,9 +1625,9 @@ class Compiler:
             code += f".Lexec_end_{exec_id}:\n"
             
             return code
-        elif node.name == "length":
+        elif not is_callback_call and node.name == "length":
             if len(node.arguments) != 1:
-                raise CompilerError(f"length() expects one argument (list or string), got {len(node.arguments)} at L{node.name_token.lineno}")
+                raise CompilerError(f"length() expects one argument (list or string), got {len(node.arguments)} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Add a unique ID to avoid duplicate labels
             if not hasattr(self, 'next_length_label_id'):
@@ -1585,7 +1635,7 @@ class Compiler:
             length_label_id = self.next_length_label_id
             self.next_length_label_id += 1
             
-            code = f"  # length(list|string) call at L{node.name_token.lineno}\n"
+            code = f"  # length(list|string) call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             code += self.visit(node.arguments[0], context) # List/string pointer in RAX
             
             # Determine if the argument is a string or a list by checking its type
@@ -1593,10 +1643,10 @@ class Compiler:
             
             code += "  mov rdi, rax # Pointer for length check\n"
             code += "  cmp rdi, 0 # Check for null pointer \n"
-            code += f"  jne .L_length_not_null_{node.name_token.lineno}_{length_label_id}\n"
+            code += f"  jne .L_length_not_null_{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}_{length_label_id}\n"
             code += "  mov rax, 0 # Length of null is 0\n"
-            code += f"  jmp .L_length_end_{node.name_token.lineno}_{length_label_id}\n"
-            code += f".L_length_not_null_{node.name_token.lineno}_{length_label_id}:\n"
+            code += f"  jmp .L_length_end_{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}_{length_label_id}\n"
+            code += f".L_length_not_null_{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}_{length_label_id}:\n"
             
             if arg_type == "string":
                 # For strings, use strlen
@@ -1607,17 +1657,17 @@ class Compiler:
                 # For lists, get length from list header
                 code += "  mov rax, QWORD PTR [rdi + 8] # Load length from list_ptr + 8 bytes offset\n"
                 
-            code += f".L_length_end_{node.name_token.lineno}_{length_label_id}:\n"
+            code += f".L_length_end_{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}_{length_label_id}:\n"
             return code
-        elif node.name == "index":
+        elif not is_callback_call and node.name == "index":
             if len(node.arguments) != 2:
-                raise CompilerError(f"index() expects two arguments (string, position), got {len(node.arguments)} at L{node.name_token.lineno}")
+                raise CompilerError(f"index() expects two arguments (string, position), got {len(node.arguments)} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Add a unique ID to avoid duplicate labels
             index_id = self.next_index_label_id
             self.next_index_label_id += 1
             
-            code = f"  # index(string, position) call at L{node.name_token.lineno}\n"
+            code = f"  # index(string, position) call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the string pointer
             code += self.visit(node.arguments[0], context) # String pointer in RAX
@@ -1681,15 +1731,15 @@ class Compiler:
             code += "  mov rax, rbx         # Return new string ptr in RAX\n"
 
             return code
-        elif node.name == "append":
+        elif not is_callback_call and node.name == "append":
             if len(node.arguments) != 2:
-                raise CompilerError(f"append() expects two arguments (list, value), got {len(node.arguments)} at L{node.name_token.lineno}")
+                raise CompilerError(f"append() expects two arguments (list, value), got {len(node.arguments)} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
 
             # Use a unique ID for this append call
             append_id = self.next_append_label_id
             self.next_append_label_id += 1
 
-            code = f"  # append(list, value) call at L{node.name_token.lineno}\n"
+            code = f"  # append(list, value) call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             # Evaluate list pointer (arg 0)
             code += self.visit(node.arguments[0], context) # List pointer in RAX
             code += "  push rax # Save list_ptr on stack (as it might change due to realloc)\n"
@@ -1803,15 +1853,15 @@ class Compiler:
             # If called as `append(list,val)` as a statement, the original variable is NOT updated by this code.
             return code
 
-        elif node.name == "pop":
+        elif not is_callback_call and node.name == "pop":
             if len(node.arguments) != 1:
-                raise CompilerError(f"pop() expects exactly one argument (list), got {len(node.arguments)} at L{node.name_token.lineno}")
+                raise CompilerError(f"pop() expects exactly one argument (list), got {len(node.arguments)} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use a unique ID for pop operations
             pop_id = self.next_pop_label_id
             self.next_pop_label_id += 1
             
-            code = f"  # pop() call at L{node.name_token.lineno}\n"
+            code = f"  # pop() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Evaluate list pointer (arg 0)
             code += self.visit(node.arguments[0], context) # List pointer in RAX
@@ -1880,9 +1930,9 @@ class Compiler:
             
             return code
 
-        elif node.name == "insert":
+        elif not is_callback_call and node.name == "insert":
             if len(node.arguments) != 3:
-                raise CompilerError(f"insert() expects three arguments (list, index, value), got {len(node.arguments)} at L{node.name_token.lineno}")
+                raise CompilerError(f"insert() expects three arguments (list, index, value), got {len(node.arguments)} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use a unique ID for insert operations
             if not hasattr(self, 'next_insert_label_id'):
@@ -1890,7 +1940,7 @@ class Compiler:
             insert_id = self.next_insert_label_id
             self.next_insert_label_id += 1
             
-            code = f"  # insert(list, index, value) call at L{node.name_token.lineno}\n"
+            code = f"  # insert(list, index, value) call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Evaluate list pointer (arg 0)
             code += self.visit(node.arguments[0], context) # List pointer in RAX
@@ -2063,12 +2113,12 @@ class Compiler:
             code += f".L_insert_end_{insert_id}:\n"
             return code
 
-        elif node.name == "open":
+        elif not is_callback_call and node.name == "open":
             # open(filename, mode) - Opens a file and returns a file pointer
             if len(node.arguments) != 2:
-                raise CompilerError(f"open() expects exactly two arguments (filename, mode), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"open() expects exactly two arguments (filename, mode), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
-            code = f"  # open() call at L{node.name_token.lineno}\n"
+            code = f"  # open() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the filename in RDI (first arg to fopen)
             code += self.visit(node.arguments[0], context)
@@ -2085,7 +2135,7 @@ class Compiler:
             
             # Check for NULL return (error)
             code += "  test rax, rax # Check if file was opened successfully\n"
-            code += "  jnz .Lopen_success_{0}\n".format(node.name_token.lineno)
+            code += "  jnz .Lopen_success_{0}\n".format(node.name_token.lineno if hasattr(node, 'name_token') else 'unknown')
             
             # Handle error without any complicated stack manipulations
             err_msg = "Error: Failed to open file\n"
@@ -2095,17 +2145,17 @@ class Compiler:
             code += "  mov rdi, 1 # Exit code 1 for error\n"
             code += "  call exit # Exit program\n"
             
-            code += ".Lopen_success_{0}:\n".format(node.name_token.lineno)
+            code += ".Lopen_success_{0}:\n".format(node.name_token.lineno if hasattr(node, 'name_token') else 'unknown')
             
             # Result is in RAX (the FILE* pointer)
             return code
             
-        elif node.name == "close":
+        elif not is_callback_call and node.name == "close":
             # close(file_pointer) - Closes a file
             if len(node.arguments) != 1:
-                raise CompilerError(f"close() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"close() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
-            code = f"  # close() call at L{node.name_token.lineno}\n"
+            code = f"  # close() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get file pointer in RDI (arg to fclose)
             code += self.visit(node.arguments[0], context)
@@ -2117,12 +2167,12 @@ class Compiler:
             # Result (success/failure) is in RAX
             return code
             
-        elif node.name == "write":
+        elif not is_callback_call and node.name == "write":
             # write(file_pointer, content) - Writes content to a file
             if len(node.arguments) != 2:
-                raise CompilerError(f"write() expects exactly two arguments (file pointer, content), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"write() expects exactly two arguments (file pointer, content), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
-            code = f"  # write() call at L{node.name_token.lineno}\n"
+            code = f"  # write() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get file pointer in RCX (4th arg to fwrite)
             code += self.visit(node.arguments[0], context)
@@ -2150,12 +2200,12 @@ class Compiler:
             # Result is in RAX (number of items written)
             return code
             
-        elif node.name == "read":
+        elif not is_callback_call and node.name == "read":
             # read(file_pointer) - Reads entire file content into a string
             if len(node.arguments) != 1:
-                raise CompilerError(f"read() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"read() expects exactly one argument (file pointer), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
-            code = f"  # read() call at L{node.name_token.lineno}\n"
+            code = f"  # read() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get file pointer
             code += self.visit(node.arguments[0], context)
@@ -2204,16 +2254,16 @@ class Compiler:
             
             return code
 
-        elif node.name == "input":
+        elif not is_callback_call and node.name == "input":
             # input() function - prompts the user and returns a string
             if len(node.arguments) != 1:
-                raise CompilerError(f"input() expects exactly one argument (prompt string), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"input() expects exactly one argument (prompt string), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Add unique ID for labels
             input_id = self.next_input_id
             self.next_input_id += 1
             
-            code = f"  # input() call at L{node.name_token.lineno}\n"
+            code = f"  # input() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # First, print the prompt using printf
             prompt_expr = node.arguments[0]
@@ -2271,16 +2321,16 @@ class Compiler:
             
             return code
 
-        elif node.name == "to_int":
+        elif not is_callback_call and node.name == "to_int":
             # to_int() function - converts a string to integer
             if len(node.arguments) != 1:
-                raise CompilerError(f"to_int() expects exactly one argument (string), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"to_int() expects exactly one argument (string), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use unique IDs for labels
             to_int_id = self.next_to_int_id
             self.next_to_int_id += 1
             
-            code = f"  # to_int() call at L{node.name_token.lineno}\n"
+            code = f"  # to_int() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the string in RAX
             code += self.visit(node.arguments[0], context)
@@ -2295,16 +2345,16 @@ class Compiler:
             # Result is in RAX
             return code
 
-        elif node.name == "to_string":
+        elif not is_callback_call and node.name == "to_string":
             # to_string() function - converts an integer to string
             if len(node.arguments) != 1:
-                raise CompilerError(f"to_string() expects exactly one argument (int), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"to_string() expects exactly one argument (int), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use unique IDs for labels
             to_string_id = self.next_to_string_id
             self.next_to_string_id += 1
             
-            code = f"  # to_string() call at L{node.name_token.lineno}\n"
+            code = f"  # to_string() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the integer in RAX
             code += self.visit(node.arguments[0], context)
@@ -2336,16 +2386,16 @@ class Compiler:
             
             return code
 
-        elif node.name == "to_stringf":
+        elif not is_callback_call and node.name == "to_stringf":
             # to_stringf() function - converts a float to string
             if len(node.arguments) != 1:
-                raise CompilerError(f"to_stringf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"to_stringf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use unique IDs for labels
             to_stringf_id = self.next_to_string_id  # Reuse the to_string ID counter
             self.next_to_string_id += 1
             
-            code = f"  # to_stringf() call at L{node.name_token.lineno}\n"
+            code = f"  # to_stringf() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the float in XMM0
             code += self.visit(node.arguments[0], context)
@@ -2381,16 +2431,16 @@ class Compiler:
             
             return code
 
-        elif node.name == "to_intf":
+        elif not is_callback_call and node.name == "to_intf":
             # to_intf() function - converts a float to integer
             if len(node.arguments) != 1:
-                raise CompilerError(f"to_intf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno}")
+                raise CompilerError(f"to_intf() expects exactly one argument (float), got {len(node.arguments)} L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
             
             # Use unique IDs for labels
             to_intf_id = self.next_to_int_id  # Reuse the to_int ID counter
             self.next_to_int_id += 1
             
-            code = f"  # to_intf() call at L{node.name_token.lineno}\n"
+            code = f"  # to_intf() call at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
             
             # Get the float in XMM0
             code += self.visit(node.arguments[0], context)
@@ -2401,9 +2451,38 @@ class Compiler:
             
             return code
 
-        else:
-            # Fallback for other free functions
+        else: # Covers both direct C lib calls and our new callback calls
             explicit_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+            call_assembly = ""
+            
+            if is_callback_call:
+                call_assembly += func_addr_in_rax_setup_code # Loads func address into RAX
+                call_assembly += f"  # Callback invocation for {effective_func_name_for_display} at L{node.name.lineno if hasattr(node.name, 'lineno') else 'unknown'}\n"
+                # The target address is in RAX. If RDI (first arg reg) is not used by an explicit argument,
+                # we might need to move RAX to another reg before argument setup if RDI is needed.
+                # For simplicity, let's assume if there are args, RAX (func ptr) needs to be saved and restored,
+                # or moved to a non-argument register before setting up args.
+                # Let's use R11 for the callback address.
+                call_assembly += "  mov r11, rax       # Move callback address to R11 to free up RAX for args\n"
+            else: # Standard C function call (e.g. from math library, or other externs)
+                if not isinstance(node.name, str):
+                     raise CompilerError(f"Function name must be a string for direct calls, got {type(node.name)} for {effective_func_name_for_display} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}")
+                call_assembly += f"  # Function Call to {node.name} at L{node.name_token.lineno if hasattr(node, 'name_token') else 'unknown'}\n"
+
+            # Argument processing (same for direct C calls and callbacks)
+            num_explicit_args_to_pass = len(node.arguments)
+            stack_arg_count = 0
+            if num_explicit_args_to_pass > len(explicit_arg_regs):
+                stack_arg_count = num_explicit_args_to_pass - len(explicit_arg_regs)
+
+            # Push stack arguments (if any), from right to left
+            for i in range(num_explicit_args_to_pass - 1, len(explicit_arg_regs) - 1, -1):
+                # Check if this argument is a float before evaluating it
+                arg_type = self.get_expr_type(node.arguments[i], context)
+                call_assembly += self.visit(node.arguments[i], context)
+                if arg_type == "float":
+                    # For float values, need to store the xmm0 register value
+                    call_assembly += "  sub rsp, 8             # Reserve space for float argument\n"
             call_assembly = f"  # Function Call to {node.name} at L{node.name_token.lineno}\n"
             # Pass arguments
             for i, arg in enumerate(node.arguments):
@@ -3092,6 +3171,9 @@ class Compiler:
             if var_type_str == "float":
                 # For float variables, store from XMM0
                 assign_assembly += f"  movsd QWORD PTR [rbp {var_offset_rbp}], xmm0 # Assign float {var_name} at [rbp{var_offset_rbp}]\n"
+            elif var_type_str == "func":
+                 # For 'func' type, RAX contains the address of the function
+                assign_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Assign func {var_name} with address in RAX at [rbp{var_offset_rbp}]\n"
             else:
                 # For non-float variables (including pointers like lists), store from RAX
                 assign_assembly += f"  mov QWORD PTR [rbp {var_offset_rbp}], rax # Assign {var_name} at [rbp{var_offset_rbp}]\n"
@@ -3654,98 +3736,149 @@ class Compiler:
         library = node.library
         function_name = node.function_name
         
-        if library == "m":  # Math library
-            # Add the math function to externs if not already there
-            if function_name not in self.externs:
-                self.externs.append(function_name)
-                
-            code = f"  # C library call: {library}.{function_name} at L{node.lineno}\n"
+        if function_name not in self.externs:
+            self.externs.append(function_name)
             
-            # Handle arguments (floating point arguments for math functions)
-            # Math functions in C typically expect args in xmm0, xmm1, etc. for floats
-            # and return results in xmm0
+        code = f"  # C library call: {library}.{function_name} at L{node.lineno}\n"
+        
+        # Handle arguments (floating point arguments for math functions)
+        # Math functions in C typically expect args in xmm0, xmm1, etc. for floats
+        # and return results in xmm0
+        
+        # For multiple arguments, we need to evaluate them in reverse to preserve order
+        for i, arg in reversed(list(enumerate(node.arguments))):
+            # Generate code to compute the argument value
+            code += self.visit(arg, context)
             
-            # For multiple arguments, we need to evaluate them in reverse to preserve order
-            for i, arg in reversed(list(enumerate(node.arguments))):
-                # Generate code to compute the argument value
-                code += self.visit(arg, context)
-                
-                # If more than one argument, move results to the appropriate registers
-                if i > 0:
-                    # For floating point arguments, store to xmm0-xmm7
-                    if i <= 7:  # x86_64 calling convention allows up to 8 floating point args
-                        code += f"  movsd %xmm{i}, %xmm0\n"
+            # If more than one argument, move results to the appropriate registers
+            if i > 0:
+                # For floating point arguments, store to xmm0-xmm7
+                if i <= 7:  # x86_64 calling convention allows up to 8 floating point args
+                    code += f"  movsd %xmm{i}, %xmm0\n"
+        
+        # Call the C library function
+        code += f"  call {function_name}@PLT\n"
+        
+        # Result is already in xmm0 for floating point return values
+        return code
+
+    def resolve_function_name_to_label(self, name_str: str, context) -> str | None:
+        """
+        Resolves a given name string to a callable method's label.
+        name_str could be "method" (implies current class) or "ClassName_method".
+        context is (current_class_name, current_method_name) or None.
+        Returns the label string (e.g., "ClassName_MethodName") or None if not found.
+        """
+        program_node = getattr(self, 'current_program_node', None)
+        if not program_node:
+            return None
+
+        # Attempt 1: name_str is already a fully qualified label "ClassName_methodName"
+        # This assumes ClassName itself does not contain underscores.
+        # A more robust way would be to check if name_str matches any "class_method" label.
+        for cls_node in program_node.classes:
+            safe_cls_name = cls_node.name.replace('.', '_')
+            for method_node in cls_node.methods:
+                if f"{safe_cls_name}_{method_node.name}" == name_str:
+                    return name_str
+        
+        # Attempt 2: name_str is "methodName", try with current class from context
+        if context:
+            current_class_name, _ = context
+            # current_class_name is already sanitized (no dots) if it came from self.current_method_context
+            for cls_node in program_node.classes:
+                if cls_node.name.replace('.', '_') == current_class_name:
+                    for method_node in cls_node.methods:
+                        if method_node.name == name_str:
+                            return f"{current_class_name}_{name_str}"
+        
+        # Attempt 3: name_str is "methodName", try to find it in any class as a static-like reference
+        # This might be ambiguous if multiple classes have a method with the same name.
+        # For now, we prioritize the above. A simple unique check could be added if needed.
+        # Example: If user writes `var cb = someMethod;` and `someMethod` only exists in `FooClass`.
+        # This part is omitted for now to avoid ambiguity; require qualification or context.
+
+        return None
+
+    def visit_IfNode(self, node: IfNode, context):
+        if_assembly = f"  # If statement at L{node.lineno}\n"
+        else_label, end_if_label = self.new_if_labels()
+        
+        # Step 1: Evaluate the condition.
+        # - For integer comparisons ( <, >, ==, etc. on numbers):
+        #   visit_BinaryOpNode will execute a CMP instruction, setting flags. RAX is not relevant for the condition outcome.
+        # - For float comparisons ( <, >, ==, etc. on floats):
+        #   visit_BinaryOpNode will execute a UCOMISD instruction, setting flags, and convert to 0/1 in RAX.
+        # - For string comparisons ( <, >, ==, etc. on strings):
+        #   visit_BinaryOpNode will call strcmp, result in RAX. We need to CMP RAX, 0.
+        # - For logical operations (&&, ||):
+        #   visit_BinaryOpNode will evaluate and put 0 or 1 in RAX. We need to CMP RAX, 0.
+        # - For other expressions (e.g., a variable, a function call):
+        #   visit_OtherExpression will put its value in RAX. We need to CMP RAX, 0 (0=false, non-zero=true).
+        
+        if_assembly += self.visit(node.condition, context)
+        
+        jump_instruction = ""
+        
+        if isinstance(node.condition, BinaryOpNode):
+            op_type = node.condition.op_token.type
             
-            # Call the C library function
-            code += f"  call {function_name}@PLT\n"
+            # Check for float comparison
+            is_float_comparison_op = False
+            left_type = self.get_expr_type(node.condition.left, context)
+            right_type = self.get_expr_type(node.condition.right, context)
+            if (left_type == "float" or right_type == "float") and op_type in [
+                TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL
+            ]:
+                is_float_comparison_op = True
             
-            # Result is already in xmm0 for floating point return values
-            return code
+            is_string_comparison_op = False
+            if op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
+                if left_type == "string" and right_type == "string":
+                    is_string_comparison_op = True
+
+            if is_float_comparison_op:
+                # For float comparisons, visit_BinaryOpNode already set RAX to 0 or 1
+                if_assembly += "  cmp rax, 0                   # Check if float comparison result is false (0)\n"
+                jump_instruction = "jz"                         # Jump if false (RAX == 0)
+            elif is_string_comparison_op:
+                # visit_BinaryOpNode for string comparison put strcmp result in RAX.
+                if_assembly += "  cmp rax, 0                   # Compare strcmp result with 0\n"
+                if op_type == TT_LESS_THAN: jump_instruction = "jge"    # True if rax < 0. Jump if !(rax < 0) => rax >= 0
+                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # True if rax > 0. Jump if !(rax > 0) => rax <= 0
+                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg"     # True if rax <= 0. Jump if !(rax <= 0) => rax > 0
+                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl"    # True if rax >= 0. Jump if !(rax >= 0) => rax < 0
+                elif op_type == TT_EQUAL: jump_instruction = "jne"    # True if rax == 0. Jump if rax != 0
+                elif op_type == TT_NOT_EQUAL: jump_instruction = "je"     # True if rax != 0. Jump if rax == 0
+            elif op_type in [TT_LOGICAL_AND, TT_LOGICAL_OR]:
+                # visit_BinaryOpNode for logical ops put 0 or 1 in RAX.
+                if_assembly += "  cmp rax, 0                   # Check if logical op result is false (0)\n"
+                jump_instruction = "jz"                         # Jump if false (RAX == 0)
+            elif op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_EQUAL, TT_NOT_EQUAL]:
+                # This is for INTEGER comparisons.
+                # visit_BinaryOpNode for these did `cmp rbx, rax`. Flags are set.
+                if op_type == TT_LESS_THAN: jump_instruction = "jge" # Jump if not less
+                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # Jump if not greater
+                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg" # Jump if greater
+                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl" # Jump if less
+                elif op_type == TT_EQUAL: jump_instruction = "jne" # Jump if not equal
+                elif op_type == TT_NOT_EQUAL: jump_instruction = "je" # Jump if equal
+            else:
+                # This case should not be hit if all BinaryOpNode types used in If conditions are handled above.
+                raise CompilerError(f"Unhandled BinaryOpNode type '{op_type}' as If condition at L{node.lineno}")
         else:
-            # Support for other libraries can be added here
-            raise CompilerError(f"Unsupported C library: '{library}' at L{node.lineno}")
+            # Condition is not a BinaryOpNode (e.g., a variable, function call, literal).
+            # Assume its truthiness (0 for false, non-zero for true) is in RAX after visit.
+            if_assembly += "  cmp rax, 0                   # Check if condition is false (0)\n"
+            jump_instruction = "jz"                         # Jump if false
             
-
-if __name__ == '__main__':
-    from .parser_lexer import Lexer, Parser
-    source_code_funcs = '''
-    class Main {
-        def main() -> void {
-            print("10 + 20 = ", this:add(10, 20))
-        }
-        def add(a int, b int) -> int {
-            return a + b
-        }
-    }
-    '''
-    print(f"Compiling source:\n{source_code_funcs}")
-    lexer = Lexer(source_code_funcs)
-    tokens = lexer.tokenize()
-    parser = Parser(tokens)
-    ast = parser.parse()
-    compiler = Compiler()
-    try:
-        assembly = compiler.compile(ast)
-        print("\nGenerated Assembly (GAS x86-64):")
-        print(assembly)
-        with open("output_funcs.s", "w") as f:
-            f.write(assembly)
-        print("\nAssembly saved to output_funcs.s")
-        print("Try to assemble and link with: gcc -no-pie output_funcs.s -o funcs_program")
-        print("Then run: ./funcs_program")
-    except CompilerError as e:
-        print(f"\nCompiler Error: {e}")
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during compilation: {e}")
-        import traceback
-        traceback.print_exc()
-
-    source_code_print_multi = '''
-    class Main {
-        def main() -> void {
-            print("Number: ", 123, " Also: ", this:get_num())
-        }
-        def get_num() -> int {
-            return 456
-        }
-    }
-    '''
-    print(f"\nCompiling source:\n{source_code_print_multi}")
-    lexer_pm = Lexer(source_code_print_multi)
-    tokens_pm = lexer_pm.tokenize()
-    parser_pm = Parser(tokens_pm)
-    ast_pm = parser_pm.parse()
-    compiler_pm = Compiler()
-    try:
-        assembly_pm = compiler_pm.compile(ast_pm)
-        print("\nGenerated Assembly for print_multi:")
-        print(assembly_pm)
-        with open("output_print_multi.s", "w") as f:
-            f.write(assembly_pm)
-        print("\nAssembly saved to output_print_multi.s")
-    except CompilerError as e:
-        print(f"\nCompiler Error (print_multi): {e}")
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during compilation (print_multi): {e}")
-        import traceback
-        traceback.print_exc()
+        jump_target = else_label if node.else_block else end_if_label
+        if_assembly += f"  {jump_instruction} {jump_target}\n"
+        
+        if_assembly += self.visit(node.then_block, context)
+        if node.else_block:
+            if_assembly += f"  jmp {end_if_label}\n"
+            if_assembly += f"{else_label}:\n"
+            if_assembly += self.visit(node.else_block, context)
+        if_assembly += f"{end_if_label}:\n"
+        return if_assembly
