@@ -493,6 +493,55 @@ def handle_compile_command(args):
         if os.path.exists(temp_s_file):
             os.remove(temp_s_file)
 
+def handle_run_command(args):
+    # First, compile the file
+    # We need to temporarily modify args to ensure handle_compile_command
+    # produces an executable and doesn't just print tokens or AST.
+    original_assembly_arg = args.assembly if hasattr(args, 'assembly') else False
+    original_ast_arg = args.ast if hasattr(args, 'ast') else False
+    original_tokens_arg = args.tokens if hasattr(args, 'tokens') else False
+
+    args.assembly = False # Ensure executable is produced
+    args.ast = False      # Ensure executable is produced
+    args.tokens = False   # Ensure executable is produced
+
+    handle_compile_command(args)
+
+    # Restore original args state if needed for future commands (though run is usually final)
+    args.assembly = original_assembly_arg
+    args.ast = original_ast_arg
+    args.tokens = original_tokens_arg
+
+    # Determine the output executable name based on handle_compile_command logic
+    # This logic is replicated from lines 444-477 of handle_compile_command
+    base_name = os.path.splitext(os.path.basename(os.path.abspath(args.input_file)))[0]
+    if args.output:
+        final_exe_name = args.output
+    else:
+        # This part of the logic is slightly simplified for the run command,
+        # assuming we always want an executable.
+        final_exe_name = base_name if os.path.exists(base_name) and os.path.isdir(base_name) else "a.out"
+        if base_name == "a.out" : final_exe_name = "a.out.run"
+
+    # Check if the executable was successfully created
+    if not os.path.exists(final_exe_name):
+        print(f"Error: Compilation failed. Could not find executable '{final_exe_name}'.")
+        return
+
+    # Run the compiled executable
+    print(f"Running executable: ./{final_exe_name}")
+    try:
+        # Use subprocess.run to execute the compiled binary
+        # capture_output=False allows the executable's output to go directly to the terminal
+        subprocess.run([f"./{final_exe_name}"], check=True, capture_output=False)
+    except FileNotFoundError:
+        print(f"Error: Executable '{final_exe_name}' not found. Compilation might have failed or output path is incorrect.")
+    except PermissionError:
+        print(f"Error: Permission denied to execute '{final_exe_name}'. Make sure it's executable.")
+    except subprocess.CalledProcessError as e:
+        print(f"Execution failed with error code {e.returncode}")
+
+
 def main():
     arg_parser = argparse.ArgumentParser(description="Pangy Compiler & Tools")
     subparsers = arg_parser.add_subparsers(dest="command", help="Sub-commands")
@@ -509,6 +558,11 @@ def main():
     # Install command parser
     install_parser = subparsers.add_parser("install", help="Install a Pangy library to ~/.pangylibs", aliases=['i'])
     install_parser.add_argument("library_path", help="Path to the library folder to install")
+
+    # Run command parser
+    run_parser = subparsers.add_parser("run", help="Compile and run a Pangy source file (.pgy)", aliases=['r'])
+    run_parser.add_argument("input_file", help="Pangy source file to compile and run (.pgy)")
+    run_parser.add_argument("-o", "--output", help="Output file name for the executable (optional)") # Allow -o for run too
     
     args = arg_parser.parse_args()
 
@@ -519,6 +573,11 @@ def main():
             compile_parser.error("argument input_file: Can't be empty when 'compile' command is used.")
             return
         handle_compile_command(args)
+    elif args.command == "run":
+        if not args.input_file:
+             run_parser.error("argument input_file: Can't be empty when 'run' command is used.")
+             return
+        handle_run_command(args)
     else:
         # Default behavior if no command is given or if input_file is provided at top level
         # This allows `pangy myfile.pgy` to work as `pangy compile myfile.pgy`
