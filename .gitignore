@@ -64,8 +64,7 @@ constructor
 floats
 float_lists_advanced
 float_lists
-float_conversions
-clibs
+float_convertions
 
 # Logs
 *.log

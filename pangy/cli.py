@@ -3,7 +3,7 @@ import os
 import subprocess
 import shutil # Added for library installation
 from .lexer import Lexer
-from .parser import Parser, ProgramNode, VarDeclNode, ListLiteralNode, StringLiteralNode
+from .parser import Parser, ProgramNode
 from .compiler import Compiler
 
 # Directory for globally installed Pangy libraries
@@ -298,10 +298,8 @@ def handle_compile_command(args):
     # Value: (list_of_ClassNodes, list_of_MacroDefNodes, list_of_further_includes_from_that_file)
     file_analysis_cache = {}
 
-    # Set to track used C libraries (e.g., "m" for math)
-    used_clibs = set()
-    # Set to track explicitly defined C libraries from 'Main.full_ld.other_lds'
-    explicit_clibs = set()
+    # Flag to track if math library is used
+    uses_math_library = False
 
     while import_directives_queue:
         current_pgy_file_to_analyze, specific_import_details = import_directives_queue.pop(0)
@@ -320,35 +318,35 @@ def handle_compile_command(args):
             # Check for math library usage
             for cls in parsed_classes:
                 for method in cls.methods:
-                    # Recursively check for C library calls within the method's body
-                    def collect_clib_usage(node):
-                        nonlocal used_clibs
+                    # Check if any method contains a math library call
+                    def check_for_math_library(node):
+                        nonlocal uses_math_library
                         if hasattr(node, 'statements'):
                             for stmt in node.statements:
-                                collect_clib_usage(stmt)
+                                check_for_math_library(stmt)
                         elif hasattr(node, 'expression'):
-                            collect_clib_usage(node.expression)
+                            check_for_math_library(node.expression)
                         elif hasattr(node, 'condition'):
-                            collect_clib_usage(node.condition)
-                            collect_clib_usage(node.then_block)
+                            check_for_math_library(node.condition)
+                            check_for_math_library(node.then_block)
                             if node.else_block:
-                                collect_clib_usage(node.else_block)
+                                check_for_math_library(node.else_block)
                         elif hasattr(node, 'body'):
-                            collect_clib_usage(node.body)
+                            check_for_math_library(node.body)
                         elif hasattr(node, 'left') and hasattr(node, 'right'):
-                            collect_clib_usage(node.left)
-                            collect_clib_usage(node.right)
+                            check_for_math_library(node.left)
+                            check_for_math_library(node.right)
                         elif hasattr(node, 'operand_node'):
-                            collect_clib_usage(node.operand_node)
+                            check_for_math_library(node.operand_node)
                         elif hasattr(node, 'arguments'):
                             for arg in node.arguments:
-                                collect_clib_usage(arg)
-                        # If this is a CLibraryCallNode, add its library to the set
-                        if hasattr(node, 'library') and node.library:
-                            used_clibs.add(node.library)
+                                check_for_math_library(arg)
+                        # Check if this is a CLibraryCallNode with library="m"
+                        if hasattr(node, 'library') and node.library == "m":
+                            uses_math_library = True
                             
                     if method.body:
-                        collect_clib_usage(method.body)
+                        check_for_math_library(method.body)
             
             classes_from_this_file = parsed_classes
             macros_from_this_file = parsed_macros
@@ -372,7 +370,7 @@ def handle_compile_command(args):
             if import_key_for_directive not in processed_import_directives:
                 import_directives_queue.append((resolved_next_pgy_file, next_import_details_tuple))
                 processed_import_directives.add(import_key_for_directive)
-                
+
     # Deduplicate classes and macros by name (first encountered wins)
     final_classes = []
     seen_class_names = set()
@@ -386,7 +384,7 @@ def handle_compile_command(args):
     for macro_node in all_macros_for_master_ast:
         # Assuming macro names are unique globally for now, or qualified if class members
         # If macros can be part of classes, a more complex key is needed (e.g., classname_macroname)
-        macro_key = macro_node.name
+        macro_key = macro_node.name 
         if hasattr(macro_node, 'class_name') and macro_node.class_name: # For class macros
             macro_key = f"{macro_node.class_name}_{macro_node.name}"
 
@@ -394,36 +392,6 @@ def handle_compile_command(args):
             final_macros.append(macro_node)
             seen_macro_names.add(macro_key)
             
-    # After processing all files and building the master AST,
-    # check for 'Main' class and 'full_ld' method for explicit C library flags.
-    for cls_node in final_classes: # final_classes is already deduplicated
-        if cls_node.name == "Main":
-            for method_node in cls_node.methods:
-                if method_node.name == "full_ld":
-                    # Traverse the method body to find 'other_lds' variable
-                    def find_other_lds(node):
-                        nonlocal explicit_clibs
-                        if hasattr(node, 'statements'):
-                            for stmt in node.statements:
-                                # Assuming VarDeclNode, ListLiteralNode, StringLiteralNode are defined elsewhere
-                                if isinstance(stmt, VarDeclNode) and stmt.name == "other_lds":
-                                    if isinstance(stmt.expression, ListLiteralNode):
-                                        for element in stmt.expression.elements:
-                                            if isinstance(element, StringLiteralNode):
-                                                explicit_clibs.add(element.value)
-                                elif hasattr(stmt, 'body'): # For loops, if statements etc.
-                                    find_other_lds(stmt.body)
-                                elif hasattr(stmt, 'then_block'): # For if statements
-                                    find_other_lds(stmt.then_block)
-                                    if hasattr(stmt, 'else_block') and stmt.else_block:
-                                        find_other_lds(stmt.else_block)
-                                # Add other node types that might contain statements/expressions if necessary
-                    
-                    if method_node.body:
-                        find_other_lds(method_node.body)
-                    break # Found full_ld, no need to check other methods
-            break # Found Main class, no need to check other classes
-
     master_ast = ProgramNode(classes=final_classes, includes=[], macros=final_macros)
 
     if args.ast:
@@ -476,11 +444,10 @@ def handle_compile_command(args):
         if base_name == "a.out" : final_exe_name = "a.out.run" 
 
     try:
-        # Add -l flags for all used C libraries (both detected and explicitly defined)
-        all_clibs_to_link = used_clibs.union(explicit_clibs)
+        # Add -lm flag if math library is used
         compile_command = ["gcc", "-no-pie", temp_s_file, "-o", final_exe_name]
-        for lib in all_clibs_to_link:
-            compile_command.append(f"-l{lib}")
+        if uses_math_library:
+            compile_command.append("-lm")
             
         print(f"Running: {' '.join(compile_command)}")
         subprocess.run(compile_command, check=True)
