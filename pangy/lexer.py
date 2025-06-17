@@ -59,6 +59,7 @@ TT_STATIC = 'STATIC' # For static methods
 TT_DOT = 'DOT' # For member access and static calls like Class.method
 TT_INCLUDE = 'INCLUDE' # For include "path" directives
 TT_LOOP = 'LOOP' # For loop keyword
+TT_WHILE = 'WHILE' # For while loops
 TT_STOP = 'STOP' # For stop keyword
 
 # Tokens for list support
@@ -156,6 +157,8 @@ class Lexer:
             return Token(TT_INCLUDE, 'include', self.lineno, start_col)
         elif result == 'loop':
             return Token(TT_LOOP, 'loop', self.lineno, start_col)
+        elif result == 'while':
+            return Token(TT_WHILE, 'while', self.lineno, start_col)
         elif result == 'stop':
             return Token(TT_STOP, 'stop', self.lineno, start_col)
         elif result == 'macro': # Added for macro keyword

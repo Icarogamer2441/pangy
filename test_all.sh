@@ -31,6 +31,7 @@ pangy compile examples/float_lists_advanced.pgy -o float_lists_advanced
 pangy compile examples/float_lists.pgy -o float_lists
 pangy compile examples/float_conversions.pgy -o float_conversions
 pangy compile examples/clibs.pgy -o clibs
+pangy compile examples/while.pgy -o while
 
 echo "Running hello..."
 ./hello
@@ -126,6 +127,9 @@ echo "--------------------------------"
 echo "Running clibs..."
 ./clibs
 echo "--------------------------------"
+echo "Running while..."
+./while
+echo "--------------------------------"
 echo "========= TESTING UTILS ========="
 echo "--------------------------------"
 echo "Running string_utils..."
@@ -134,5 +138,5 @@ echo "--------------------------------"
 echo "Running math_utils..."
 ./math_utils
 
-rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm string_utils math_utils changeidxval insert constructor floats float_lists_advanced float_lists float_conversions clibs
+rm hello funcs vars ifs imp_main loops classinclass classinparams exitfunc macros macrosinclass inputsandtypes files lists matrixes strcmp args bitandshifts string_idx string_format listret publicprivate execterm string_utils math_utils changeidxval insert constructor floats float_lists_advanced float_lists float_conversions clibs while
 rm ./*.txt

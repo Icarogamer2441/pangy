@@ -14,7 +14,7 @@ from .parser import (
     Parser, ASTNode, ProgramNode, IncludeNode, ClassNode, ParamNode, MethodNode, 
     BlockNode, PrintNode, ReturnNode, ExprNode, StringLiteralNode, IntegerLiteralNode, 
     FloatLiteralNode, IdentifierNode, ThisNode, MethodCallNode, FunctionCallNode, 
-    BinaryOpNode, UnaryOpNode, IfNode, VarDeclNode, LoopNode, StopNode, AssignmentNode, 
+    BinaryOpNode, UnaryOpNode, IfNode, VarDeclNode, LoopNode, WhileNode, StopNode, AssignmentNode, 
     MacroDefNode, MacroInvokeNode, ListLiteralNode, ArrayAccessNode, ClassVarDeclNode, 
     ClassVarAccessNode, TrueLiteralNode, FalseLiteralNode, CLibraryCallNode
 )
@@ -34,6 +34,7 @@ class Compiler:
         self.next_printf_format_label_id = 0
         self.next_if_label_id = 0 # For if/else labels
         self.next_loop_id = 0 # For loop labels
+        self.next_while_id = 0 # For while loops
         self.next_list_header_label_id = 0 # For list static data
         self.next_append_label_id = 0 # For append function labels
         self.next_pop_label_id = 0 # For pop function labels
@@ -57,6 +58,7 @@ class Compiler:
         # For macro support
         self.macros = {} # Maps macro names to MacroDefNode objects
         self.class_vars = {}  # Maps class_name -> {var_name -> (offset, type, is_public)}
+        self.used_c_libs = set() # To track which C libraries are used, e.g. {"m"}
 
     def new_string_label(self, value):
         if value in self.string_literals:
@@ -109,6 +111,11 @@ class Compiler:
         self.next_if_label_id += 1
         return f".L_else_{idx}", f".L_end_if_{idx}"
 
+    def new_while_labels(self):
+        idx = self.next_while_id
+        self.next_while_id += 1
+        return f".L_while_start_{idx}", f".L_while_end_{idx}"
+
     def new_list_header_label(self): # For potential static list data, though lists are dynamic
         idx = self.next_list_header_label_id
         self.next_list_header_label_id += 1
@@ -151,7 +158,8 @@ class Compiler:
         self.text_section_code += "\n" # Blank line after externs
 
         self.string_literals = {}
-        self.next_string_label_id = 0; self.next_printf_format_label_id = 0; self.next_if_label_id = 0; self.next_loop_id = 0; self.next_list_header_label_id = 0
+        self.used_c_libs = set() # Reset for each compilation run
+        self.next_string_label_id = 0; self.next_printf_format_label_id = 0; self.next_if_label_id = 0; self.next_loop_id = 0; self.next_while_id = 0; self.next_list_header_label_id = 0
         self.current_method_params = {}; self.current_method_stack_offset = 0
         self.current_method_total_stack_needed = 0; self.current_method_context = None
         
@@ -3056,6 +3064,32 @@ class Compiler:
         self.loop_end_labels.pop()
         return code
 
+    def visit_WhileNode(self, node: 'WhileNode', context):
+        while_start_label, while_end_label = self.new_while_labels()
+        
+        # Also push end label for 'stop' statements
+        self.loop_end_labels.append(while_end_label)
+
+        code = f"{while_start_label}: # While loop at L{node.lineno}\n"
+        
+        # Evaluate condition
+        code += self.visit(node.condition, context)
+        code += "  cmp rax, 0\n"
+        code += f"  je {while_end_label}\n" # Jump if condition is false
+
+        # Body of the loop
+        code += self.visit(node.body, context)
+
+        # Jump back to the start to re-evaluate condition
+        code += f"  jmp {while_start_label}\n"
+
+        code += f"{while_end_label}:\n"
+
+        # Pop the label for 'stop' statements
+        self.loop_end_labels.pop()
+
+        return code
+
     def visit_StopNode(self, node: StopNode, context):
         # Jump to nearest loop end label
         if not self.loop_end_labels:
@@ -3647,44 +3681,74 @@ class Compiler:
     # ... existing get_expr_type method remains ...
 
     def visit_CLibraryCallNode(self, node: CLibraryCallNode, context):
-        """
-        Generate code to call a C library function.
-        Currently supporting 'math' library functions that use float parameters.
-        """
-        library = node.library
-        function_name = node.function_name
+        # 1. Add the library to the set of used C libraries
+        lib_name = node.library_token.value
+        if lib_name not in self.used_c_libs:
+            self.used_c_libs.add(lib_name)
         
-        if library == "m":  # Math library
-            # Add the math function to externs if not already there
-            if function_name not in self.externs:
-                self.externs.append(function_name)
-                
-            code = f"  # C library call: {library}.{function_name} at L{node.lineno}\n"
+        # 2. Add the function to externs if not already there
+        func_name = node.function_name
+        if func_name not in self.externs:
+            self.externs.append(func_name)
+            # Prepend the extern declaration to the text section.
+            # This is a bit of a hack; a better way is to collect all externs first.
+            self.text_section_code = f".extern {func_name}\n" + self.text_section_code
+
+        # 3. Handle arguments
+        code = f"  # C Library Call to {func_name} from lib '{lib_name}' at L{node.lineno}\n"
+        
+        # Define the registers for the first few arguments (System V AMD64 ABI)
+        int_arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+        float_arg_regs = ["xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"]
+        
+        int_arg_count = 0
+        float_arg_count = 0
+        
+        # Evaluate arguments and move them to registers
+        # We process arguments in reverse to handle stack pushing correctly if needed,
+        # but for register passing, order doesn't matter as much as type.
+        # However, let's just process them in order for simplicity.
+        for i, arg_node in enumerate(node.arguments):
+            # Determine argument type to use correct register
+            # This is a simplification. A real compiler would have a more robust type checking system.
+            # We'll infer based on literal type or assume int/pointer for identifiers.
+            arg_type = self.get_expr_type(arg_node, context)
             
-            # Handle arguments (floating point arguments for math functions)
-            # Math functions in C typically expect args in xmm0, xmm1, etc. for floats
-            # and return results in xmm0
-            
-            # For multiple arguments, we need to evaluate them in reverse to preserve order
-            for i, arg in reversed(list(enumerate(node.arguments))):
-                # Generate code to compute the argument value
-                code += self.visit(arg, context)
-                
-                # If more than one argument, move results to the appropriate registers
-                if i > 0:
-                    # For floating point arguments, store to xmm0-xmm7
-                    if i <= 7:  # x86_64 calling convention allows up to 8 floating point args
-                        code += f"  movsd %xmm{i}, %xmm0\n"
-            
-            # Call the C library function
-            code += f"  call {function_name}@PLT\n"
-            
-            # Result is already in xmm0 for floating point return values
-            return code
-        else:
-            # Support for other libraries can be added here
-            raise CompilerError(f"Unsupported C library: '{library}' at L{node.lineno}")
-            
+            code += self.visit(arg_node, context) # The result is in rax (int/ptr) or xmm0 (float)
+
+            if arg_type == "float":
+                if float_arg_count < len(float_arg_regs):
+                    # If the result is in rax (e.g. from a function returning float), it needs to be moved to xmm
+                    # But our convention is that float expressions put result in xmm0.
+                    # So if arg_node was a float expr, result is in xmm0. We move it to target xmm.
+                    target_reg = float_arg_regs[float_arg_count]
+                    if target_reg != "xmm0":
+                         code += f"  movq {target_reg}, xmm0 # Move arg {i+1} to {target_reg}\n"
+                    float_arg_count += 1
+                else:
+                    # Stack passing for floats - more complex, not implemented for now
+                    raise CompilerError(f"Stack passing for float arguments not yet supported. L{node.lineno}")
+            else: # int, string, pointers
+                if int_arg_count < len(int_arg_regs):
+                    target_reg = int_arg_regs[int_arg_count]
+                    if target_reg != "rax":
+                        code += f"  mov {target_reg}, rax # Move arg {i+1} to {target_reg}\n"
+                    int_arg_count += 1
+                else:
+                    # Stack passing for ints
+                    raise CompilerError(f"Stack passing for integer/pointer arguments not yet supported. L{node.lineno}")
+
+        # Number of float arguments passed in XMM registers must be in AL for variadic functions
+        code += f"  mov al, {float_arg_count} # Number of float args in xmm registers\n"
+        code += f"  call {func_name}\n"
+        
+        # The return value is in RAX (for int/ptr) or XMM0 (for float).
+        # We need to know the return type of the C function. We'll assume it matches
+        # the surrounding expression context, but for now, we leave it in RAX or XMM0.
+        # The calling code (e.g. visit_BinaryOpNode) should handle it.
+        # This is a major simplification.
+        
+        return code
 
 if __name__ == '__main__':
     from .parser_lexer import Lexer, Parser

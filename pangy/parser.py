@@ -6,7 +6,7 @@ from .lexer import (
     TT_RETURN, TT_THIS, TT_ASSIGN, TT_VAR, TT_MINUS, TT_STAR, TT_SLASH, TT_PERCENT, 
     TT_PLUSPLUS, TT_MINUSMINUS, TT_IF, TT_ELSE, TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, 
     TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_STATIC, TT_DOT, TT_INCLUDE, 
-    TT_LOOP, TT_STOP, TT_LBRACKET, TT_RBRACKET, TT_AMPERSAND, TT_PIPE, TT_CARET, 
+    TT_LOOP, TT_WHILE, TT_STOP, TT_LBRACKET, TT_RBRACKET, TT_AMPERSAND, TT_PIPE, TT_CARET, 
     TT_TILDE, TT_LSHIFT, TT_RSHIFT, TT_URSHIFT, TT_LOGICAL_AND, TT_LOGICAL_OR, 
     TT_FLOAT_LITERAL,
     TT_TRUE, TT_FALSE,
@@ -207,6 +207,14 @@ class LoopNode(ASTNode):
         self.lineno = lineno
     def __repr__(self):
         return f"LoopNode(body={self.body}, L{self.lineno})"
+
+class WhileNode(ASTNode):
+    def __init__(self, condition, body, lineno):
+        self.condition = condition
+        self.body = body  # BlockNode
+        self.lineno = lineno
+    def __repr__(self):
+        return f"WhileNode(condition={self.condition}, body={self.body}, L{self.lineno})"
 
 class StopNode(ASTNode):
     def __init__(self, lineno):
@@ -570,6 +578,8 @@ class Parser:
             return self.parse_if_statement()
         elif start_token.type == TT_LOOP:
             return self.parse_loop_statement()
+        elif start_token.type == TT_WHILE:
+            return self.parse_while_statement()
         elif start_token.type == TT_STOP:
             return self.parse_stop_statement()
         elif start_token.type == TT_VAR: # Added for variable declaration
@@ -652,6 +662,15 @@ class Parser:
         loop_token = self.consume(TT_LOOP)
         body = self.parse_block()
         return LoopNode(body, loop_token.lineno)
+
+    def parse_while_statement(self):
+        # while_statement ::= "while" "(" expression ")" block
+        start_token = self.consume(TT_WHILE)
+        self.consume(TT_LPAREN)
+        condition = self.parse_expression()
+        self.consume(TT_RPAREN)
+        body = self.parse_block()
+        return WhileNode(condition, body, start_token.lineno)
 
     def parse_stop_statement(self):
         # stop_statement ::= "stop"
@@ -909,37 +928,32 @@ class Parser:
             self.consume(TT_FALSE)
             return FalseLiteralNode(token)
         elif token.type == TT_LPAREN:
-            self.consume(TT_LPAREN)  # Consume '('
+            lparen_token = self.consume(TT_LPAREN)
             
-            # Check for C library call pattern: ("m" use.func(args))
-            if (self.current_token.type == TT_STRING_LITERAL):
-                library_token = self.consume(TT_STRING_LITERAL)  # Consume library name token
-                
-                if self.current_token.type == TT_USE:
-                    use_token = self.consume(TT_USE)  # Consume 'use' token
-                    self.consume(TT_DOT)  # Consume '.'
-                    function_name_token = self.consume(TT_IDENTIFIER)  # Consume function name
-                    
-                    self.consume(TT_LPAREN)  # Consume '('
-                    arguments = []
-                    if self.current_token.type != TT_RPAREN:
-                        arguments = self.parse_argument_list()
-                    self.consume(TT_RPAREN)  # Consume ')'
-                    
-                    self.consume(TT_RPAREN)  # Consume the closing ')'
-                    
-                    return CLibraryCallNode(library_token, function_name_token, arguments, library_token.lineno)
-                else:
-                    # It's a parenthesized string literal expression
-                    expr = StringLiteralNode(library_token)
-                    self.consume(TT_RPAREN)
-                    return expr
-            else:
-                # Regular parenthesized expression
-                node = self.parse_expression()
+            # Check for C-style library call: ("m" use.sqrt(2.0))
+            if self.current_token.type == TT_STRING_LITERAL:
+                library_token = self.consume(TT_STRING_LITERAL)
+                self.consume(TT_USE) # Expect 'use'
+                self.consume(TT_DOT) # Expect '.'
+                function_name_token = self.consume(TT_IDENTIFIER)
+                self.consume(TT_LPAREN)
+                args = []
+                if self.current_token.type != TT_RPAREN:
+                    args = self.parse_argument_list()
                 self.consume(TT_RPAREN)
-                return node
-        elif token.type == TT_LBRACE: # For list literals like {1, 2, 3}
+                
+                # Now consume the final closing parenthesis of the ("lib" use ...) expression
+                self.consume(TT_RPAREN)
+                
+                return CLibraryCallNode(library_token, function_name_token, args, lparen_token.lineno)
+
+            # Otherwise, it's a grouped expression
+            node = self.parse_expression()
+            self.consume(TT_RPAREN)
+            return node
+            
+        # Handle list literals
+        if self.current_token.type == TT_LBRACE:
             return self.parse_list_literal()
         elif token.type == TT_AT:
             # Direct macro invocation: @name(args)

@@ -3,7 +3,7 @@ import os
 import subprocess
 import shutil # Added for library installation
 from .lexer import Lexer
-from .parser import Parser, ProgramNode
+from .parser import Parser, ProgramNode, ClassNode, MethodNode, BlockNode, IfNode, WhileNode, LoopNode
 from .compiler import Compiler
 
 # Directory for globally installed Pangy libraries
@@ -317,36 +317,37 @@ def handle_compile_command(args):
             
             # Check for math library usage
             for cls in parsed_classes:
+                math_is_needed = False
+                def check_for_math_library(node):
+                    nonlocal math_is_needed
+                    if math_is_needed: return
+
+                    # List of nodes that have a 'body' attribute which contains statements
+                    if hasattr(node, 'body') and hasattr(node.body, 'statements'):
+                         for stmt in node.body.statements:
+                            check_for_math_library(stmt)
+                    # Specific handling for IfNode, which has then_block and else_block
+                    elif hasattr(node, 'then_block'):
+                        check_for_math_library(node.then_block)
+                        if node.else_block:
+                            check_for_math_library(node.else_block)
+                    # For nodes that are expressions themselves or contain expressions
+                    elif hasattr(node, 'expression'):
+                         # This handles VarDeclNode, ReturnNode, AssignmentNode, etc.
+                         if hasattr(node.expression, 'op') and node.expression.op in ('/', '%'):
+                             math_is_needed = True
+                         # Potentially recurse into expressions if they can be complex
+                         # For now, this is a simplification. A full implementation would traverse the expression tree.
+
+                    # Check for BinaryOpNode directly if the node itself is one
+                    elif hasattr(node, 'op') and node.op in ('/', '%'):
+                        math_is_needed = True
+                
                 for method in cls.methods:
-                    # Check if any method contains a math library call
-                    def check_for_math_library(node):
-                        nonlocal uses_math_library
-                        if hasattr(node, 'statements'):
-                            for stmt in node.statements:
-                                check_for_math_library(stmt)
-                        elif hasattr(node, 'expression'):
-                            check_for_math_library(node.expression)
-                        elif hasattr(node, 'condition'):
-                            check_for_math_library(node.condition)
-                            check_for_math_library(node.then_block)
-                            if node.else_block:
-                                check_for_math_library(node.else_block)
-                        elif hasattr(node, 'body'):
-                            check_for_math_library(node.body)
-                        elif hasattr(node, 'left') and hasattr(node, 'right'):
-                            check_for_math_library(node.left)
-                            check_for_math_library(node.right)
-                        elif hasattr(node, 'operand_node'):
-                            check_for_math_library(node.operand_node)
-                        elif hasattr(node, 'arguments'):
-                            for arg in node.arguments:
-                                check_for_math_library(arg)
-                        # Check if this is a CLibraryCallNode with library="m"
-                        if hasattr(node, 'library') and node.library == "m":
-                            uses_math_library = True
-                            
-                    if method.body:
-                        check_for_math_library(method.body)
+                    check_for_math_library(method.body)
+
+                if math_is_needed and "m" not in compiler.externs:
+                    compiler.externs.append("m") # Request linking with libm
             
             classes_from_this_file = parsed_classes
             macros_from_this_file = parsed_macros
@@ -402,6 +403,14 @@ def handle_compile_command(args):
 
     compiler = Compiler()
     try:
+        # Before compiling, we can perform some checks, like for math library
+        if not hasattr(compiler, 'used_c_libs'):
+             compiler.used_c_libs = set()
+             
+        # The logic to auto-detect math library needs based on operators is now obsolete
+        # as the compiler will track used C libs directly.
+        # We can remove the check_for_math_library function entirely.
+
         assembly_code = compiler.compile(master_ast)
     except Exception as e:
         print(f"Compiler Error: {e}")
@@ -409,56 +418,42 @@ def handle_compile_command(args):
         # traceback.print_exc() # For debugging
         return
 
+    # Post-compilation: determine linker flags from used C libraries
+    linker_flags = []
+    if hasattr(compiler, 'used_c_libs'):
+        for lib in compiler.used_c_libs:
+            linker_flags.append(f"-l{lib}")
+
+    # --- Assembly and Linking ---
     base_name = os.path.splitext(os.path.basename(initial_input_file_path))[0]
-    output_s_file = f"{base_name}.s"
-    
-    if args.output:
-        output_executable_file = args.output
-    else:
-        if args.assembly:
-            output_executable_file = base_name 
-        else:
-            output_executable_file = "a.out"
-
-
-    if args.assembly:
-        s_output_target = args.output if args.output and args.output.endswith(".s") else output_s_file
-        if args.output and not args.output.endswith(".s"):
-             s_output_target = f"{os.path.splitext(args.output)[0]}.s"
-             print(f"Warning: -S specified, output file '{args.output}' does not end with .s. Saving assembly to '{s_output_target}'")
-        
-        with open(s_output_target, 'w') as f:
-            f.write(assembly_code)
-        print(f"Assembly code saved to {s_output_target}")
-        return
-
-    temp_s_file = f"{base_name}_temp.s" 
-    with open(temp_s_file, 'w') as f:
+    output_filename = args.output if args.output else os.path.splitext(os.path.basename(initial_input_file_path))[0]
+    if args.os == 'auto':
+        args.os = 'linux' if os.name == 'posix' else 'windows' # Simplified auto-detection
+    asm_filename = f"{base_name}_temp.s"
+    with open(asm_filename, 'w') as f:
         f.write(assembly_code)
 
-    final_exe_name = output_executable_file
-    if args.output:
-        final_exe_name = args.output
-    else: 
-        final_exe_name = base_name if os.path.exists(base_name) and os.path.isdir(base_name) else "a.out"
-        if base_name == "a.out" : final_exe_name = "a.out.run" 
+    # Build the gcc/clang command
+    if args.os == 'linux':
+        # Added -no-pie for compatibility on some Linux distros
+        cmd = ['gcc', '-no-pie', asm_filename, '-o', output_filename] + linker_flags
+    elif args.os == 'windows':
+        cmd = ['gcc', asm_filename, '-o', output_filename] + linker_flags
+    else: # macOS
+        cmd = ['clang', asm_filename, '-o', output_filename, '-lSystem'] + linker_flags
 
     try:
-        # Add -lm flag if math library is used
-        compile_command = ["gcc", "-no-pie", temp_s_file, "-o", final_exe_name]
-        if uses_math_library:
-            compile_command.append("-lm")
-            
-        print(f"Running: {' '.join(compile_command)}")
-        subprocess.run(compile_command, check=True)
-        print(f"Executable saved to {final_exe_name}")
+        if args.verbose:
+            print(f"Running: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"Executable saved to {output_filename}")
     except subprocess.CalledProcessError as e:
         print(f"Error during assembly/linking with gcc: {e}")
     except FileNotFoundError:
         print("Error: gcc command not found. Please ensure gcc is installed and in your PATH.")
     finally:
-        if os.path.exists(temp_s_file):
-            os.remove(temp_s_file)
+        if os.path.exists(asm_filename):
+            os.remove(asm_filename)
 
 def main():
     arg_parser = argparse.ArgumentParser(description="Pangy Compiler & Tools")
@@ -468,13 +463,15 @@ def main():
     # Compile command parser
     compile_parser = subparsers.add_parser("compile", help="Compile a Pangy source file (.pgy)", aliases=['c'])
     compile_parser.add_argument("input_file", nargs='?', default=None, help="Pangy source file to compile (.pgy)")
-    compile_parser.add_argument("-o", "--output", help="Output file name for the executable or assembly file")
-    compile_parser.add_argument("-S", "--assembly", action="store_true", help="Output assembly code (.s file) instead of an executable")
+    compile_parser.add_argument("-o", "--output", help="Specify the output file name")
+    compile_parser.add_argument("-S", "--assembly", action="store_true", help="Output assembly code (.s) instead of an executable")
     compile_parser.add_argument("--ast", action="store_true", help="Print the Abstract Syntax Tree and exit")
     compile_parser.add_argument("--tokens", action="store_true", help="Print the tokens from the main input file and exit")
+    compile_parser.add_argument("-O", "--os", type=str, default='auto', choices=['auto', 'linux', 'windows', 'macos'], help="Specify the target operating system for compilation.")
+    compile_parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output during compilation.")
 
     # Install command parser
-    install_parser = subparsers.add_parser("install", help="Install a Pangy library to ~/.pangylibs", aliases=['i'])
+    install_parser = subparsers.add_parser("install", help="Install a Pangy library globally")
     install_parser.add_argument("library_path", help="Path to the library folder to install")
     
     args = arg_parser.parse_args()
