@@ -3237,109 +3237,70 @@ class Compiler:
             class_var_target = node.target
             class_name, method_name = context # Current method's class context
 
-            assign_assembly += f"  # Assignment to class variable at L{node.lineno}\\n"
+            assign_assembly = f"  # Assignment to class variable at L{node.lineno}\n"
 
-            # 1. Evaluate the RHS expression (value to assign)
-            # Result will be in RAX (for int/ptr) or XMM0 (for float)
-            assign_assembly += self.visit(node.expression, context)
+            # 1. Determine the target class and get variable info (offset, type, public/private)
+            target_class_for_lookup = class_name # Default to current class
+            if not isinstance(class_var_target.object_expr, ThisNode):
+                # If not 'this', try to infer the class type of the object expression
+                obj_expr_type = self.get_expr_type(class_var_target.object_expr, context)
+                if obj_expr_type and obj_expr_type != "unknown" and not obj_expr_type.endswith("[]"):
+                    target_class_for_lookup = obj_expr_type.replace('.', '_')
+                else:
+                    raise CompilerError(f"Cannot determine class type for object in assignment '{class_var_target.object_expr.value}::{class_var_target.var_name}' at L{node.lineno}")
             
-            # Temporarily save the RHS value if it's not a float (RAX)
-            # If it's a float, it's in XMM0 and will be used directly.
-            # We need to evaluate the object pointer first.
-            # So, push RAX or save XMM0 content to stack.
-            
-            # Determine variable type to know if we should look for XMM0 or RAX
-            # This requires knowing the target variable's type *before* full evaluation.
-            # Let's get target variable info first.
-
             target_var_name = class_var_target.var_name
-            target_var_info = None
-            object_ptr_assembly = ""
-            is_this_access = isinstance(class_var_target.object_expr, ThisNode)
-            
-            target_class_for_lookup = ""
-
-            if is_this_access:
-                if self.this_ptr_rbp_offset is None:
-                    raise CompilerError(f"'this' pointer not available for assignment to 'this:{target_var_name}'. L{node.lineno}")
-                object_ptr_assembly += f"  mov r11, QWORD PTR [rbp {self.this_ptr_rbp_offset}]  # Load 'this' pointer into R11\\n"
-                target_class_for_lookup = class_name # Current class
-            else:
-                # Evaluate the object expression (e.g., 'obj' in obj::var)
-                # This will put object pointer in RAX. We need to save it.
-                # Problem: RHS is already evaluated and might be in RAX.
-                # Solution: Evaluate RHS, push it. Then evaluate object_expr.
-                
-                # Re-evaluate RHS and push
-                assign_assembly = f"  # Assignment to class variable {target_var_name} at L{node.lineno}\\n" # Reset assign_assembly
-                
-                # First, determine the type of the class variable we are assigning to
-                temp_obj_class_type = None
-                if isinstance(class_var_target.object_expr, IdentifierNode):
-                    obj_name = class_var_target.object_expr.value
-                    if obj_name in self.current_method_locals:
-                        temp_obj_class_type = self.current_method_locals[obj_name]['type']
-                    elif obj_name in self.current_method_params:
-                        temp_obj_class_type = self.current_method_params[obj_name]['type']
-                
-                if not temp_obj_class_type:
-                    raise CompilerError(f"Cannot determine class type for object in assignment '{class_var_target.object_expr.value}::{target_var_name}' at L{node.lineno}")
-                
-                target_class_for_lookup = temp_obj_class_type.replace('.', '_')
-                
-                if target_var_name not in self.class_vars.get(target_class_for_lookup, {}):
-                     raise CompilerError(f"Undefined class variable '{target_var_name}' in class '{target_class_for_lookup}' for assignment at L{node.lineno}")
-                
-                _, var_type, _ = self.class_vars[target_class_for_lookup][target_var_name]
-
-                # Now evaluate RHS and push/save it
-                assign_assembly += self.visit(node.expression, context) # RHS in RAX or XMM0
-                if var_type == "float":
-                    assign_assembly += "  sub rsp, 8\\n"
-                    assign_assembly += "  movsd [rsp], xmm0  # Save RHS float value on stack\\n"
-                else:
-                    assign_assembly += "  push rax           # Save RHS non-float value on stack\\n"
-
-                # Evaluate object_expr (e.g., 'obj' in obj::var = RHS)
-                assign_assembly += self.visit(class_var_target.object_expr, context) # Object pointer in RAX
-                assign_assembly += "  mov r11, rax         # Move object pointer to R11\\n"
-                
-                # Restore RHS value
-                if var_type == "float":
-                    assign_assembly += "  movsd xmm0, [rsp]  # Restore RHS float value to XMM0\\n"
-                    assign_assembly += "  add rsp, 8\\n"
-                else:
-                    assign_assembly += "  pop r10            # Restore RHS non-float value to R10 (RAX used by object_expr)\\n"
-            
-            # Get variable info (offset, type, public/private)
             safe_target_class_name = target_class_for_lookup.replace('.', '_')
+
             if safe_target_class_name not in self.class_vars or \
                target_var_name not in self.class_vars[safe_target_class_name]:
                 raise CompilerError(f"Undefined class variable '{target_var_name}' in class '{safe_target_class_name}' for assignment at L{node.lineno}")
-
+            
             offset, var_type, is_public = self.class_vars[safe_target_class_name][target_var_name]
 
-            # Access check for obj::var
-            if not is_this_access and not is_public and class_name != safe_target_class_name:
+            # Access check for obj::var (needs to be done after object type is known)
+            if not isinstance(class_var_target.object_expr, ThisNode) and not is_public and class_name != safe_target_class_name:
                  raise CompilerError(f"Cannot assign to private variable '{target_var_name}' of class '{safe_target_class_name}' from class '{class_name}' at L{node.lineno}")
 
-            # Add object pointer loading assembly if it's 'this' access (done slightly differently now)
-            if is_this_access:
-                 assign_assembly += object_ptr_assembly
 
-
-            # Store the value (RHS) into the class variable
-            # R11 contains the object pointer (this or obj)
-            # Value to store is in XMM0 (if float) or R10 (if obj::var and non-float) or RAX (if this:var and non-float)
+            # 2. Evaluate the RHS expression (value to assign)
+            # Result will be in RAX (for int/ptr) or XMM0 (for float)
+            assign_assembly += self.visit(node.expression, context)
+            
+            # 3. Save the RHS value onto the stack
             if var_type == "float":
-                assign_assembly += f"  movsd QWORD PTR [r11 + {offset}], xmm0  # Assign to float class var {target_var_name}\\n"
+                assign_assembly += "  sub rsp, 8             # Reserve space for float value\n"
+                assign_assembly += "  movsd [rsp], xmm0      # Save RHS float value on stack\n"
             else:
-                # If it was this:var, RHS is in RAX. If obj::var, RHS is in R10.
-                source_reg = "rax" if is_this_access else "r10"
-                assign_assembly += f"  mov QWORD PTR [r11 + {offset}], {source_reg}   # Assign to class var {target_var_name}\\n"
+                assign_assembly += "  push rax               # Save RHS non-float value on stack\n"
+
+            # 4. Get the object pointer into R11
+            if isinstance(class_var_target.object_expr, ThisNode):
+                if self.this_ptr_rbp_offset is None:
+                    raise CompilerError(f"'this' pointer not available for assignment to 'this:{target_var_name}'. L{node.lineno}")
+                assign_assembly += f"  mov r11, QWORD PTR [rbp {self.this_ptr_rbp_offset}]  # Load 'this' pointer into R11\n"
+            else:
+                # Evaluate the object expression (e.g., 'obj' in obj::var)
+                assign_assembly += self.visit(class_var_target.object_expr, context) # Object pointer in RAX
+                assign_assembly += "  mov r11, rax             # Move object pointer to R11\n"
+            
+            # 5. Restore the RHS value
+            if var_type == "float":
+                assign_assembly += "  movsd xmm0, [rsp]      # Restore RHS float value to XMM0\n"
+                assign_assembly += "  add rsp, 8             # Clean up stack\n"
+            else:
+                assign_assembly += "  pop r10                # Restore RHS non-float value to R10\n"
+
+            # 6. Perform Assignment
+            # R11 contains the object pointer (this or obj)
+            # Value to store is in XMM0 (if float) or R10 (if non-float)
+            if var_type == "float":
+                assign_assembly += f"  movsd QWORD PTR [r11 + {offset}], xmm0  # Assign to float class var {target_var_name}\n"
+            else:
+                assign_assembly += f"  mov QWORD PTR [r11 + {offset}], r10   # Assign to class var {target_var_name}\n"
 
             # Assignments have no value in our language model (returns 0)
-            assign_assembly += "  xor rax, rax # Zero return value for assignment expression\\n"
+            assign_assembly += "  xor rax, rax # Zero return value for assignment expression\n"
             return assign_assembly
 
     def visit_MacroDefNode(self, node: MacroDefNode, context=None):
