@@ -427,6 +427,17 @@ def handle_compile_command(args):
     # --- Assembly and Linking ---
     base_name = os.path.splitext(os.path.basename(initial_input_file_path))[0]
     output_filename = args.output if args.output else os.path.splitext(os.path.basename(initial_input_file_path))[0]
+    
+    if args.assembly: # If -S flag is present, just output the assembly file
+        asm_output_name = output_filename
+        if not asm_output_name.endswith(".s"):
+            asm_output_name += ".s"
+        with open(asm_output_name, 'w') as f:
+            f.write(assembly_code)
+        print(f"Assembly code saved to {asm_output_name}")
+        return # Exit here, do not proceed to linking
+    
+    # If -S is not present, continue with compilation to executable
     if args.os == 'auto':
         args.os = 'linux' if os.name == 'posix' else 'windows' # Simplified auto-detection
     asm_filename = f"{base_name}_temp.s"

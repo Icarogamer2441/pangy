@@ -2916,75 +2916,16 @@ class Compiler:
         else_label, end_if_label = self.new_if_labels()
         
         # Step 1: Evaluate the condition.
-        # - For integer comparisons ( <, >, ==, etc. on numbers):
-        #   visit_BinaryOpNode will execute a CMP instruction, setting flags. RAX is not relevant for the condition outcome.
-        # - For float comparisons ( <, >, ==, etc. on floats):
-        #   visit_BinaryOpNode will execute a UCOMISD instruction, setting flags, and convert to 0/1 in RAX.
-        # - For string comparisons ( <, >, ==, etc. on strings):
-        #   visit_BinaryOpNode will call strcmp, result in RAX. We need to CMP RAX, 0.
-        # - For logical operations (&&, ||):
-        #   visit_BinaryOpNode will evaluate and put 0 or 1 in RAX. We need to CMP RAX, 0.
-        # - For other expressions (e.g., a variable, a function call):
-        #   visit_OtherExpression will put its value in RAX. We need to CMP RAX, 0 (0=false, non-zero=true).
+        # The visit method for conditions (e.g., BinaryOpNode for comparisons, logical ops)
+        # is expected to leave 1 in RAX for true, and 0 in RAX for false.
         
         if_assembly += self.visit(node.condition, context)
         
-        jump_instruction = ""
+        # Check if the result of the condition is false (0).
+        if_assembly += "  cmp rax, 0                   # Check if condition result is false (0)\n"
         
-        if isinstance(node.condition, BinaryOpNode):
-            op_type = node.condition.op_token.type
-            
-            # Check for float comparison
-            is_float_comparison_op = False
-            left_type = self.get_expr_type(node.condition.left, context)
-            right_type = self.get_expr_type(node.condition.right, context)
-            if (left_type == "float" or right_type == "float") and op_type in [
-                TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL
-            ]:
-                is_float_comparison_op = True
-            
-            is_string_comparison_op = False
-            if op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_EQUAL, TT_NOT_EQUAL, TT_LESS_EQUAL, TT_GREATER_EQUAL]:
-                if left_type == "string" and right_type == "string":
-                    is_string_comparison_op = True
-
-            if is_float_comparison_op:
-                # For float comparisons, visit_BinaryOpNode already set RAX to 0 or 1
-                if_assembly += "  cmp rax, 0                   # Check if float comparison result is false (0)\n"
-                jump_instruction = "jz"                         # Jump if false (RAX == 0)
-            elif is_string_comparison_op:
-                # visit_BinaryOpNode for string comparison put strcmp result in RAX.
-                if_assembly += "  cmp rax, 0                   # Compare strcmp result with 0\n"
-                if op_type == TT_LESS_THAN: jump_instruction = "jge"    # True if rax < 0. Jump if !(rax < 0) => rax >= 0
-                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # True if rax > 0. Jump if !(rax > 0) => rax <= 0
-                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg"     # True if rax <= 0. Jump if !(rax <= 0) => rax > 0
-                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl"    # True if rax >= 0. Jump if !(rax >= 0) => rax < 0
-                elif op_type == TT_EQUAL: jump_instruction = "jne"    # True if rax == 0. Jump if rax != 0
-                elif op_type == TT_NOT_EQUAL: jump_instruction = "je"     # True if rax != 0. Jump if rax == 0
-            elif op_type in [TT_LOGICAL_AND, TT_LOGICAL_OR]:
-                # visit_BinaryOpNode for logical ops put 0 or 1 in RAX.
-                if_assembly += "  cmp rax, 0                   # Check if logical op result is false (0)\n"
-                jump_instruction = "jz"                         # Jump if false (RAX == 0)
-            elif op_type in [TT_LESS_THAN, TT_GREATER_THAN, TT_LESS_EQUAL, TT_GREATER_EQUAL, TT_EQUAL, TT_NOT_EQUAL]:
-                # This is for INTEGER comparisons.
-                # visit_BinaryOpNode for these did `cmp rbx, rax`. Flags are set.
-                if op_type == TT_LESS_THAN: jump_instruction = "jge" # Jump if not less
-                elif op_type == TT_GREATER_THAN: jump_instruction = "jle" # Jump if not greater
-                elif op_type == TT_LESS_EQUAL: jump_instruction = "jg" # Jump if greater
-                elif op_type == TT_GREATER_EQUAL: jump_instruction = "jl" # Jump if less
-                elif op_type == TT_EQUAL: jump_instruction = "jne" # Jump if not equal
-                elif op_type == TT_NOT_EQUAL: jump_instruction = "je" # Jump if equal
-            else:
-                # This case should not be hit if all BinaryOpNode types used in If conditions are handled above.
-                raise CompilerError(f"Unhandled BinaryOpNode type '{op_type}' as If condition at L{node.lineno}")
-        else:
-            # Condition is not a BinaryOpNode (e.g., a variable, function call, literal).
-            # Assume its truthiness (0 for false, non-zero for true) is in RAX after visit.
-            if_assembly += "  cmp rax, 0                   # Check if condition is false (0)\n"
-            jump_instruction = "jz"                         # Jump if false
-            
         jump_target = else_label if node.else_block else end_if_label
-        if_assembly += f"  {jump_instruction} {jump_target}\n"
+        if_assembly += f"  jz {jump_target}             # Jump if false\n"
         
         if_assembly += self.visit(node.then_block, context)
         if node.else_block:
