@@ -198,7 +198,7 @@ class Compiler:
             is_public = var_node.is_public
             # Store class variable info (offset from object start, type, public/private)
             self.class_vars[class_label][var_name] = (offset, var_type, is_public)
-            offset += 8  # Assuming all variables (including list pointers) need 8 bytes
+            offset += 8  # All variables (including list pointers) need 8 bytes
             
         for method_node in node.methods:
             self.current_method_context = (class_label, method_node.name)
@@ -234,6 +234,9 @@ class Compiler:
             if var_type == "float":
                 # For float variables, load directly into XMM0
                 code += f"  movsd xmm0, QWORD PTR [rax + {offset}]  # Load float {var_name} from object into XMM0\n"
+            elif var_type.endswith("[]"): 
+                # For list variables, load the list pointer
+                code += f"  mov rax, QWORD PTR [rax + {offset}]  # Load list pointer {var_name} from object\n"
             else:
                 code += f"  mov rax, QWORD PTR [rax + {offset}]  # Load {var_name} from object\n"
             return code
@@ -275,6 +278,9 @@ class Compiler:
             if var_type == "float":
                 # For float variables, load directly into XMM0
                 code += f"  movsd xmm0, QWORD PTR [rcx + {offset}]  # Load float {var_name} from object into XMM0\n"
+            elif var_type.endswith("[]"): 
+                # For list variables, load the list pointer
+                code += f"  mov rax, QWORD PTR [rcx + {offset}]  # Load list pointer {var_name} from object\n"
             else:
                 code += f"  mov rax, QWORD PTR [rcx + {offset}]  # Load {var_name} from object\n"
             return code
@@ -790,8 +796,12 @@ class Compiler:
         local_info = self.current_method_locals[var_name]
         var_offset_rbp = local_info['offset_rbp']
         var_type_str = local_info['type'] # e.g., "int", "int[]", "float"
-
-        decl_assembly = f"  # Variable Declaration: {var_name} ({var_type_str}) at L{node.lineno}\n"
+        
+        # Store the is_constant flag in the local_info dictionary
+        local_info['is_constant'] = node.is_constant
+        
+        const_str = "constant " if node.is_constant else ""
+        decl_assembly = f"  # {const_str}Variable Declaration: {var_name} ({var_type_str}) at L{node.lineno}\n"
         
         # 1. Evaluate the right-hand side expression (initialization value)
         #    This will handle ListLiteralNode if used for initialization.
@@ -2972,6 +2982,10 @@ class Compiler:
         else:
             raise CompilerError(f"Identifier '{var_name}' not found for ++/-- operation at L{node.lineno}")
 
+        # Check if the variable is a constant
+        if 'is_constant' in var_info and var_info['is_constant']:
+            raise CompilerError(f"Cannot modify constant variable '{var_name}' with ++/-- operator at L{node.lineno}")
+
         if var_info['type'] != 'int':
             raise CompilerError(f"++/-- operator can only be applied to 'int' type variables, not '{var_info['type']}' for '{var_name}' at L{node.lineno}")
 
@@ -3057,6 +3071,10 @@ class Compiler:
             
             if var_offset_rbp is None:
                 raise CompilerError(f"Undefined variable '{var_name}' in assignment at L{node.lineno}")
+            
+            # Check if the variable is a constant
+            if 'is_constant' in local_info and local_info['is_constant']:
+                raise CompilerError(f"Cannot assign to constant variable '{var_name}' at L{node.lineno}")
             
             var_type_str = local_info['type'] # e.g., "int", "int[]", "float"
             

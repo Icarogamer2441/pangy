@@ -1,0 +1,12 @@
+class Main {
+    def main() -> void {
+        var *a int = 10 // the * means it is a constant and can't be modified
+
+        // a = 20 // this will cause an error
+        // a++ // this too
+
+        var *b int = 20
+
+        print("10 + 20 = ", a + b)
+    }
+}

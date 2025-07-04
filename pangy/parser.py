@@ -189,16 +189,18 @@ class IfNode(ASTNode):
 
 # --- Nodes for Variable Declarations ---
 class VarDeclNode(ASTNode): # Statement Node
-    def __init__(self, name_token, type_token, expr_node, lineno):
+    def __init__(self, name_token, type_token, expr_node, lineno, is_constant=False):
         self.name = name_token.value
         self.name_token = name_token
         self.type = type_token.value # This will become a string
         self.type_token = type_token # May need adjustment
         self.expression = expr_node # The expression to initialize the variable
         self.lineno = lineno
+        self.is_constant = is_constant # Flag to indicate if this is a constant variable
 
     def __repr__(self):
-        return f"VarDeclNode(name='{self.name}', type='{self.type}', expr={self.expression}, L{self.lineno})"
+        const_str = "*" if self.is_constant else ""
+        return f"VarDeclNode(name='{const_str}{self.name}', type='{self.type}', expr={self.expression}, L{self.lineno})"
 
 # AST Nodes for Loops, Stop, and Assignment
 class LoopNode(ASTNode):
@@ -640,8 +642,15 @@ class Parser:
         return IfNode(condition_expr, then_block, else_block, if_token.lineno)
 
     def parse_var_declaration_statement(self):
-        # var_declaration ::= "var" IDENTIFIER TYPE ( "." IDENTIFIER )* ("=" expression)?
+        # var_declaration ::= "var" ["*"] IDENTIFIER TYPE ( "." IDENTIFIER )* ("=" expression)?
         self.consume(TT_VAR)
+        
+        # Check if this is a constant variable declaration (indicated by *)
+        is_constant = False
+        if self.current_token.type == TT_STAR:
+            is_constant = True
+            self.consume(TT_STAR)
+            
         name_token = self.consume(TT_IDENTIFIER)
 
         # Parse type using the new helper
@@ -655,7 +664,7 @@ class Parser:
             self.consume(TT_ASSIGN)
             expr_node = self.parse_expression()
 
-        return VarDeclNode(name_token, type_token, expr_node, name_token.lineno)
+        return VarDeclNode(name_token, type_token, expr_node, name_token.lineno, is_constant)
 
     def parse_loop_statement(self):
         # loop_statement ::= "loop" block
@@ -1036,4 +1045,4 @@ class Parser:
     def parse(self):
         if not self.tokens or self.tokens[0].type == TT_EOF and len(self.tokens) == 1:
             return ProgramNode([]) # Handle empty or only EOF token input
-        return self.parse_program() 
+        return self.parse_program()
